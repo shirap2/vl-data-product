@@ -11,3 +11,6 @@ docs/LLM_USAGE.md
 tools/llm_usage.py
 .claude/settings.json
 docs/*.md
+!docs/RELEASE_NOTES.md
+!docs/ERROR_CODES.md
+!docs/ASSUMPTIONS.md
