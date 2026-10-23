@@ -10,3 +10,4 @@ __pycache__/
 docs/LLM_USAGE.md
 tools/llm_usage.py
 .claude/settings.json
+docs/*.md
