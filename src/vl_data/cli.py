@@ -3,12 +3,14 @@
 import typer
 
 import vl_data
+from vl_data.generator.cli import register as register_generator
 
 app = typer.Typer(
     name="vl_data",
     help="Vehicle-location data product command line.",
     no_args_is_help=True,
 )
+register_generator(app)
 
 
 def _version_callback(value: bool) -> None:
