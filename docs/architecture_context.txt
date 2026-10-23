@@ -1,0 +1,153 @@
+VL DATA PRODUCT - ARCHITECTURE CONTEXT (agreed in brainstorming, 2026-10-23)
+Authoritative sources: docs/assignment.pdf (rank 1), then this file (rank 2).
+The older request.md, README_template.md and vl_assignment_guide_v2.md were deleted on
+2026-10-23. Planning and implementation follow this file and the assignment only.
+Every module must answer the assignment (see "ASSIGNMENT COVERAGE").
+
+DECISIONS
+- Motion model: STRAIGHT LINE ALONG X ONLY, signed speed (positive = forward, negative =
+  backward, 0 = stopped). The vehicle is a 1 m cube; a cube's orientation cannot be read
+  from its shape, so there is no yaw and no turning (user decision, 2026-10-23). y and z are
+  constant. No rotation anywhere.
+- Use case: extract VELOCITY and ACCELERATION of the ego vehicle from the point cloud. The
+  vehicle can drive forwards, drive backwards, stop, and drive at different speeds.
+  (Position is the base signal they come from. Direction of travel, turns, sharp-turn and
+  other events, and clip candidates are DROPPED.)
+- Config: YAML files in config/, loaded and validated by core/config.py (pydantic).
+  Env var may override the warehouse path.
+- Lake: plain Parquet (PyArrow), Hive-style folders partitioned by drive, behind one
+  Lake class (partition swap, read, list). DuckDB for SQL.
+- API: Python SDK (VLClient) + SQL. No web service (FastAPI is "coming soon").
+  This is the assistant's default; the user has not said otherwise.
+- Ground truth is stored outside the warehouse and read only by the evaluation step.
+- Every file is hashed (SHA-256). manifest.json lists the scenario hash and the hash of
+  every file. A lineage table links scenario hash -> file hashes -> row counts, so data
+  can be tied to its scenario and checked against ground truth.
+- Quality: Typer CLI, pytest + hypothesis, ruff, mypy, src layout, Python 3.11,
+  Windows PowerShell (python -m ... only).
+
+OVERALL SHAPE
+ config/*.yaml -> core/config.py (pydantic)
+ [1 GENERATOR] -> data/raw/<hash12>/{frames.parquet, ground_truth.parquet, manifest.json}
+   -> [2 ETL] (verify hashes, validate VL-001..006, reduce to keypoints) -> lake
+   -> [3 USE-CASE] (velocity, acceleration from the lake) -> lake
+   -> SDK (+SQL) -> [4 BI: one Streamlit app, 3 tabs]
+ core/ = config loader, Arrow schemas, Lake, hashing. Dependencies point one way:
+ core -> 1 -> 2 -> 3 -> 4.
+
+MODULE 1: DATA GENERATOR
+- Input: Scenario (pydantic, saved as YAML): start (x, y, z in cm; speed, default 0 cm/s),
+  seed, and a motion profile = list of segments of two types:
+    move(duration_s, end_speed_cm_s): speed changes in a straight line from the current
+      speed to end_speed (signed; equal speeds = constant speed; sign change = reversal).
+    stop(duration_s): speed held at 0.
+  Durations are in seconds and validated to a whole number of frames (multiple of 1/16 s).
+  Validation rejects a move whose start and end speed are both 0 (use stop).
+- Output: full point cloud per frame (1 m cube, 10x10x10 lattice = 1,000 points from 0 to
+  99 cm, fixed order, int32 cm, 16 fps, timestamp_ns = frame_id * 62,500,000),
+  ground_truth.parquet (per-frame x position, velocity, acceleration), manifest.json.
+- Tech: numpy, pydantic, PyYAML, PyArrow, hashlib, Typer.
+- UI: minimal form in the Streamlit Generate tab (start values, editable segment table,
+  preview plot, Generate button). CLI calls the same function.
+- Simulator validation (two-way): infer_track(frames) recovers per-frame position and
+  velocity from centroids; fit_segments(track) recovers the typed segment list. hypothesis
+  tests check infer(generate(s)) ~= s with MEASURED tolerances. Also: a 1 cm x-move shifts
+  every point by exactly (1,0,0).
+- Fault-injection helper (drop frames, corrupt a frame, shift timestamps) for ETL tests.
+- Noise: out of scope. The only error is integer-cm rounding of the points.
+
+MODULE 2: LOADER / ETL
+- Verify file hashes against the manifest; validate each frame with error codes
+  VL-001 missing frame, VL-002 timestamp gap, VL-003 duplicate frame, VL-004 corrupt point
+  cloud, VL-005 schema mismatch, VL-006 physically impossible motion.
+- Reduce each frame to critical points: 8 cube corners + centroid (9 points), chosen by a
+  list in YAML. Reason for corners: fixed spacing is a rigid-shape check (VL-004).
+- Assumption: sensor point order is fixed, so keypoints are picked by index.
+- Tech: pandas, numpy, PyArrow, DuckDB, rule registry.
+- Lake tables: keypoints, quarantine, lineage. Idempotent re-ingest via partition swap.
+
+MODULE 3: USE-CASE ALGORITHM
+- Queries keypoints through the SDK. Computes velocity (differences of the centroid x over
+  1/16 s, signed) and acceleration (rate of change of velocity). Smoothing or window fits
+  are allowed because per-frame differences of rounded points are noisy.
+- Output: motion table in the lake.
+- Evaluation: join with ground truth by scenario hash; velocity and acceleration error vs
+  measured tolerances. The only place that reads ground truth.
+
+MODULE 4: BI
+- One Streamlit + Plotly app, three tabs: Generate, Clean (quality by error code, kept vs
+  dropped), Analyze (estimated vs true velocity and acceleration timelines, error
+  metrics). Uses SDK and module functions only. Scenario-hash badge on each tab.
+
+ASSIGNMENT COVERAGE (docs/assignment.pdf, section 3 "Exercise")
+Signal facts from the PDF: VL = vehicle location as a point cloud, cubic-cm resolution;
+example = 1 m cube, 100^3 points, left-back-bottom corner at the origin; 16 frames per
+second; second-frame example moves 1 cm on x; the (1,2,0) in the example is a typo for
+(1,1,0). The PDF is confidential: never commit it, never quote it in the docs.
+1. At least 3 use cases that could benefit from the product, written in the docs.
+   Chosen and implemented: ego-motion extraction (velocity and acceleration).
+2. Implement ONE use case with:
+   a. Data source (mock; no data is supplied) = Module 1 generator (saves frames, 1000+).
+   b. ETL for the use case = Module 2 (keypoint reduction, validation) + Module 3.
+   c. Data warehouse = converted data for user query, generic structure = the lake tables
+      (keypoints, motion, lineage) queried by DuckDB / SDK. Generic, use-case independent
+      schemas.
+   d. BI = Module 4, one Streamlit app.
+   Each technology choice needs a stated reason and named alternatives (asked in the
+   interview). More complex technology scores higher only if it serves the purpose.
+3. Supporting documentation:
+   a. List of possible error codes (VL-001..VL-006, generated from the rule registry).
+   b. Architecture / design document.
+   c. Release notes: product description, usage / example, known issues, coming soon.
+4. LLM usage: name of the model, the main prompts, the approach used. Kept in
+   docs/LLM_USAGE.md (generated by tools/llm_usage.py). Be ready to explain any code.
+5. Submission: a repo link with full code, docs and needed files; ask for more time if
+   needed. The user must still ask for the due date.
+
+DECISIONS LOG (plan-loop for Module 1, 2026-10-23)
+- The project skeleton (pyproject.toml, src layout, tooling, YAML config loader) is part
+  of the Module 1 plan.
+- Noise: out of scope.
+- Ground truth: per-frame x position, velocity and acceleration. No event labels.
+- UI scope for Module 1: the Generate tab only, as a self-contained function with a small
+  standalone runner. The three-tab shell is built in Module 4.
+- Approved extra sources: official docs of pydantic, PyYAML, Typer, hypothesis, Python
+  hashlib/json.
+- Segments: move + stop (see Module 1). No turn, no cruise/brake types.
+- Point sample: 10x10x10 lattice, 1,000 points from 0 to 99 cm, includes the 8 corners,
+  fixed order, no seed needed.
+- Scenario hash: SHA-256 of canonical JSON of the validated scenario (sorted keys, fixed
+  number formatting) + seed.
+- infer_scenario: both, in two steps (infer_track, then fit_segments).
+- Manifest file hashes: SHA-256 of the file bytes on disk.
+- Drive folder: data/raw/<first 12 hex of scenario hash>/ ; the manifest keeps the full
+  64-hex hash and the ETL checks it.
+- Start speed: scenario start block has speed, default 0 (the drive starts at rest).
+- Durations: seconds, validated to whole frames.
+
+MEASURED (throwaway script, 1000-frame demo, 10x10x10 integer lattice, float positions
+rounded with rint; planar variant, 1-D numbers re-measured in the plan)
+- Position error max 0.66 cm (bound 0.87 cm). Speed error per frame max 17.6 cm/s (bound
+  22.6). Acceleration error per frame max 462 cm/s^2 (bound 724), larger than a -150 cm/s^2
+  braking signal, so per-frame acceleration is unusable and fits must use windows.
+- Piecewise-linear change-point fit found segment boundaries within 2 frames.
+
+- Docs process (2026-10-23): docs are updated during each task (own sections only, numbers
+  and commands from real runs), then one final docs pass runs every documented command from a
+  fresh clone. docs/ASSUMPTIONS.md logs every assumption, and each task updates it.
+
+STILL OPEN
+- The user has not confirmed the SDK-only API choice (default: SDK + SQL).
+
+OTHER SESSIONS
+- A Module 2 (Loader/ETL) session works in worktree-module2-loader-etl. It was told on
+  2026-10-23 that the generator contract (frames.parquet Arrow schema, manifest key names,
+  fault-injection helper, core/ path) is NOT final and will be sent after plan approval.
+
+LLM USAGE TRACKING
+- tools/llm_usage.py install was run on 2026-10-23. The raw log .claude/llm-usage/ is
+  git-ignored. Only main prompts are logged (slash commands and prompts of 8+ words).
+
+NEXT STEPS
+1. Finish plan-loop for Module 1 (data generator).
+2. plan-loop + implement-loop per module after that.

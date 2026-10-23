@@ -1,0 +1,12 @@
+docs/assignment.pdf
+assignment.pdf
+warehouse/
+data/
+*.parquet
+.venv/
+__pycache__/
+.claude/llm-usage/
+.claude/worktrees/
+docs/LLM_USAGE.md
+tools/llm_usage.py
+.claude/settings.json
