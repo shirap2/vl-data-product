@@ -1,6 +1,7 @@
 # Release notes: version 0.1.0 (draft)
 
-Status as of 2026-10-23: nothing is built yet. This draft is filled in as each module lands, and
+Status as of 2026-10-23: the project skeleton is built (install, `--version`, help); the generator
+and the other modules are not. This draft is filled in as each module lands, and
 every command and number in it must come from a real run before submission. Items marked
 "planned" have not been run.
 
@@ -17,11 +18,25 @@ speeds. All data is synthetic.
 | Part | What it does | Status |
 |---|---|---|
 | Generator | Writes a hashed drive: 16 fps point cloud, ground truth, manifest. Checks itself by recovering the scenario from the data. | Plan approved |
-| Loader / ETL | Verifies hashes, validates frames with error codes VL-001 to VL-006, keeps 9 keypoints per frame, and writes keypoints, quarantine and lineage tables to a queryable lake. | Plan written, not built |
+| Loader / ETL | Verifies hashes, validates frames with error codes VL-001 to VL-006, keeps 9 keypoints per frame, and writes keypoints, quarantine and lineage tables to a queryable lake. | Plan approved, not built |
 | Use-case algorithm | Computes velocity and acceleration and compares them with ground truth. | Planned |
 | BI | One Streamlit app: generate, clean, analyze. | Planned |
 
+## Install and first check (run on 2026-10-23, Windows PowerShell, Python 3.12.6)
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m vl_data --version
+```
+
+The last command prints `vl_data 0.1.0` and exits with code 0. Running `python -m vl_data` with no
+arguments prints the help text and exits with code 2. Python 3.11 or newer is required; only
+3.12 has been tested.
+
 ## Usage (planned, not yet run)
+
+Run these with the project's virtual environment active, or call `.venv\Scripts\python.exe` in place of `python`.
 
 Generate the demo drive (1,000 frames, one reversal, two stops):
 
