@@ -59,8 +59,10 @@ Built so far: the project skeleton (`pyproject.toml`, `src/vl_data/__init__.py`,
 (`src/vl_data/core/` with `config.py`, `hashing.py`, `schemas.py`, `manifest.py`, plus
 `config/default.yaml` and `tests/core/`), and the first three generator modules
 (`src/vl_data/generator/models.py`, `body.py`, `motion.py`, the demo scenario in
-`generator/scenarios/demo.yaml`, and `tests/generator/`). Not built yet: `drive.py`, `writer.py`,
-`inverse.py`, `faults.py`, the generator's CLI commands and the Generate tab.
+`generator/scenarios/demo.yaml`, and `tests/generator/`), then the drive builder and writer
+(`drive.py`, `writer.py`) and the generator's `generate` and `verify` commands (`generator/cli.py`,
+registered by the root `cli.py`). Not built yet: `inverse.py`, `faults.py`, the `roundtrip` command
+and the Generate tab.
 
 ## Data flow inside the generator
 
@@ -71,6 +73,26 @@ Built so far: the project skeleton (`pyproject.toml`, `src/vl_data/__init__.py`,
 4. Build each frame's points: a 10x10x10 lattice shifted by the rounded position.
 5. Write the frames and ground truth to a temporary folder, build the manifest from the file
    hashes, swap the folder into place, and verify it.
+
+`generate` in `drive.py` does steps 2 to 4 in memory and returns a `Drive` (scenario, hash, frames
+table, ground-truth table). It builds the frames table in batches of 1,000 frames. `write_drive`
+in `writer.py` does step 5, and `generate_to_disk` runs both and then `verify_drive`; the command
+line uses `generate_to_disk`.
+
+How a drive is written:
+
+- The temporary folder is `.tmp-*` inside the output folder and holds only the two Parquet files
+  while the manifest is built. `manifest.json` is written last.
+- Parquet options are fixed so the same scenario gives the same bytes on the same pyarrow version:
+  format version 2.6, snappy compression, no dictionary, statistics on, data page version 2.0 and
+  row groups of 1,000 frames (the file is written one row group at a time).
+- An existing folder for the same hash is moved into a `.old-*` folder next to it, the new folder
+  is renamed into place, and then the `.old-*` folder is deleted. If the last rename fails, the
+  old folder is moved back; if that also fails, the `.old-*` folder is kept (it holds the only
+  copy of the old drive). The temporary folder is removed on any error.
+- The frames are never computed from `ground_truth.parquet`. Only manifest hashing and verify
+  read its bytes; the generator itself only writes it.
+- At the 100,000-frame cap the frames table is about 1.2 GB in memory. This is a calculation (100,000 frames x 12,000 bytes), not a measurement. The peak was not measured.
 
 Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 

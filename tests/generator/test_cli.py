@@ -1,0 +1,132 @@
+"""Tests for the generate and verify commands."""
+
+import re
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from vl_data.cli import app
+
+DEMO = Path(__file__).resolve().parents[2] / "src/vl_data/generator/scenarios/demo.yaml"
+
+
+def test_generate_prints_summary(runner: CliRunner, tmp_path: Path) -> None:
+    """The summary lines are printed and the manifest is verified."""
+    result = runner.invoke(app, ["generate", "--scenario", str(DEMO), "--out", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert "frames: 1000" in lines
+    assert "timestamp_spacing_ns: 62500000" in lines
+    assert "points_per_frame: 1000" in lines
+    assert "manifest: verified" in lines
+    hash_line = next(x for x in lines if x.startswith("scenario_hash: "))
+    digest = hash_line.split(": ", 1)[1]
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    drive_line = next(x for x in lines if x.startswith("drive_dir: "))
+    assert Path(drive_line.split(": ", 1)[1]) == tmp_path / digest[:12]
+
+
+def test_generate_default_out_uses_vl_raw_dir(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without --out the drive goes under VL_RAW_DIR."""
+    monkeypatch.setenv("VL_RAW_DIR", str(tmp_path))
+    result = runner.invoke(app, ["generate", "--scenario", str(DEMO)])
+    assert result.exit_code == 0, result.output
+    digest = next(x for x in result.output.splitlines() if x.startswith("scenario_hash: "))
+    assert [p.name for p in tmp_path.iterdir()] == [digest.split(": ", 1)[1][:12]]
+
+
+def test_generate_missing_scenario(runner: CliRunner, tmp_path: Path) -> None:
+    """A missing scenario file gives a one-line error and exit 1."""
+    result = runner.invoke(
+        app, ["generate", "--scenario", str(tmp_path / "nope.yaml"), "--out", str(tmp_path)]
+    )
+    assert result.exit_code == 1
+    assert "not found" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_generate_invalid_scenario(runner: CliRunner, tmp_path: Path) -> None:
+    """An invalid scenario gives a clean error and exit 1."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("segments: []\n", encoding="utf-8")
+    result = runner.invoke(app, ["generate", "--scenario", str(bad), "--out", str(tmp_path)])
+    assert result.exit_code == 1
+    assert result.stderr.startswith("error:")
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "Traceback" not in result.output
+
+
+def test_verify_succeeds(runner: CliRunner, tmp_path: Path) -> None:
+    """verify prints manifest: verified for an intact drive."""
+    made = runner.invoke(app, ["generate", "--scenario", str(DEMO), "--out", str(tmp_path)])
+    assert made.exit_code == 0, made.output
+    folder = next(tmp_path.iterdir())
+    result = runner.invoke(app, ["verify", str(folder)])
+    assert result.exit_code == 0
+    assert "manifest: verified" in result.output.splitlines()
+
+
+def test_verify_fails_on_tamper(runner: CliRunner, tmp_path: Path) -> None:
+    """verify exits non-zero after a byte is changed."""
+    made = runner.invoke(app, ["generate", "--scenario", str(DEMO), "--out", str(tmp_path)])
+    assert made.exit_code == 0, made.output
+    folder = next(tmp_path.iterdir())
+    target = folder / "frames.parquet"
+    data = bytearray(target.read_bytes())
+    data[len(data) // 2] ^= 0xFF
+    target.write_bytes(bytes(data))
+    result = runner.invoke(app, ["verify", str(folder)])
+    assert result.exit_code == 1
+    assert "frames.parquet" in result.output
+    assert "manifest: verified" not in result.output
+
+
+def test_generate_out_of_range_is_one_line(runner: CliRunner, tmp_path: Path) -> None:
+    """A position outside int32 cm fails in generate_to_disk: one error line, nothing written."""
+    big = tmp_path / "big.yaml"
+    lines = [
+        "seed: 0",
+        "start: {x_cm: 1.0e+12, y_cm: 0, z_cm: 0, speed_cm_s: 0}",
+        "segments:",
+        "  - {type: stop, duration_s: 1.0}",
+    ]
+    big.write_text(chr(10).join(lines), encoding="utf-8")
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["generate", "--scenario", str(big), "--out", str(out)])
+    assert result.exit_code == 1
+    assert "cannot write drive" in result.stderr
+    assert result.stderr.startswith("error:")
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "Traceback" not in result.output
+    assert not out.exists() or list(out.iterdir()) == []
+
+
+def test_generate_prints_restore_note(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Notes attached to a write error (where the old drive is kept) reach the error line."""
+    err = OSError("rename failed")
+    err.add_note("could not restore the old drive; it is kept at X")
+
+    def boom(*args: object, **kwargs: object) -> Path:
+        raise err
+
+    monkeypatch.setattr("vl_data.generator.cli.generate_to_disk", boom)
+    result = runner.invoke(app, ["generate", "--scenario", str(DEMO), "--out", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "kept at X" in result.stderr
+    assert result.stderr.startswith("error:")
+    assert len(result.stderr.strip().splitlines()) == 1
+
+
+def test_generate_out_is_a_file(runner: CliRunner, tmp_path: Path) -> None:
+    """--out pointing at an existing file gives an error line and exit 1."""
+    afile = tmp_path / "afile"
+    afile.write_text("x")
+    result = runner.invoke(app, ["generate", "--scenario", str(DEMO), "--out", str(afile)])
+    assert result.exit_code == 1
+    assert "error:" in result.stderr
+    assert "Traceback" not in result.output

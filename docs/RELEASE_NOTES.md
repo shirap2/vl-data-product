@@ -34,15 +34,47 @@ The last command prints `vl_data 0.1.0` and exits with code 0. Running `python -
 arguments prints the help text and exits with code 2. Python 3.11 or newer is required; only
 3.12 has been tested.
 
-## Usage (planned, not yet run)
+## Usage
 
 Run these with the project's virtual environment active, or call `.venv\Scripts\python.exe` in place of `python`.
 
-Generate the demo drive (1,000 frames, one reversal, two stops):
+Generate the demo drive (1,000 frames, one reversal, two stops). Run on 2026-10-23, it took
+about 1.5 s:
 
 ```powershell
 python -m vl_data generate --scenario src/vl_data/generator/scenarios/demo.yaml --out data/raw
-python -m vl_data verify data/raw/<hash12>
+```
+
+It prints:
+
+```text
+frames: 1000
+timestamp_spacing_ns: 62500000
+points_per_frame: 1000
+scenario_hash: c8f597af59a680681e1c36d760a325a699f20fed9e2a653de78a3b80d5bca5db
+drive_dir: data\raw\c8f597af59a6
+manifest: verified
+```
+
+The folder `data/raw/c8f597af59a6/` then holds `frames.parquet` (3,196,692 bytes),
+`ground_truth.parquet` (18,133 bytes) and `manifest.json` (1,385 bytes). `--out` is optional; without
+it the drive goes to `raw_dir` from `config/default.yaml` (or `VL_RAW_DIR`). Generating the same
+scenario again replaces the folder with identical files.
+
+Check a drive against its manifest:
+
+```powershell
+python -m vl_data verify data/raw/c8f597af59a6
+```
+
+This prints `manifest: verified` and exits with code 0. After one byte of `ground_truth.parquet`
+was changed in a copy, it printed `changed: ground_truth.parquet (sha256 mismatch)` on stderr and
+exited with code 1. A missing or invalid scenario file gives a one-line `error: ...` message and
+exit code 1.
+
+Planned, not yet run (arrives with the inverse functions):
+
+```powershell
 python -m vl_data roundtrip --scenario src/vl_data/generator/scenarios/demo.yaml
 ```
 
