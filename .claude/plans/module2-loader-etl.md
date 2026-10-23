@@ -166,6 +166,7 @@ Design choices are backed by REQ-1 to REQ-15, the user decisions table, and the 
 
 | Action | Path | Purpose | Change |
 |--------|------|---------|--------|
+| modify | pyproject.toml | dependencies | add `duckdb>=2.0` to the runtime dependencies (added during TASK-1; the plan had omitted it) |
 | create | src/vl_data/core/lake_schemas.py | lake table schemas | Arrow schemas for keypoints, quarantine, lineage |
 | create | src/vl_data/core/lake.py | lake storage | `Lake` with swap, drop, read, list and DuckDB connection |
 | create | src/vl_data/etl/__init__.py | package | exports `ingest_drive`, `IngestResult` |
@@ -393,7 +394,7 @@ def error_codes(write: bool = False, check: bool = False) -> None:
 
 - TASK-1: Lake and lake schemas
   - Depends on: Module 1 TASK-2 merged (core package, schemas, manifest, pyproject)
-  - Files: src/vl_data/core/lake_schemas.py, src/vl_data/core/lake.py, tests/core/test_lake.py, docs/ARCHITECTURE.md (lake section), docs/ASSUMPTIONS.md
+  - Files: pyproject.toml, src/vl_data/core/lake_schemas.py, src/vl_data/core/lake.py, tests/core/test_lake.py, docs/ARCHITECTURE.md (lake section), docs/ASSUMPTIONS.md
   - REQs covered: REQ-6, REQ-7, REQ-12, REQ-13
   - Source: DuckDB docs, PyArrow docs
 
@@ -428,12 +429,28 @@ def error_codes(write: bool = False, check: bool = False) -> None:
 | TASK-1 | tests/core/test_lake.py | test_swap_creates_hive_partition | a swap creates `<table>/drive=<id>/part-0.parquet` with the table schema |
 | TASK-1 | tests/core/test_lake.py | test_swap_replaces_and_is_idempotent | swapping the same data twice leaves byte-identical files and one partition |
 | TASK-1 | tests/core/test_lake.py | test_failed_write_keeps_old_partition | an exception inside the batch iterator leaves the old data and no temp folder |
-| TASK-1 | tests/core/test_lake.py | test_swap_over_open_reader_on_windows | a partition read by DuckDB and closed can be swapped |
+| TASK-1 | tests/core/test_lake.py | test_swap_after_connection_closed | a partition read by DuckDB and then closed can be swapped (renamed from test_swap_over_open_reader_on_windows, because the test closes the connection first) |
 | TASK-1 | tests/core/test_lake.py | test_wrong_schema_rejected | batches with a different schema raise ValueError and write nothing |
 | TASK-1 | tests/core/test_lake.py | test_list_and_read | list_drives is sorted; read adds a string drive column; read of one drive filters |
 | TASK-1 | tests/core/test_lake.py | test_duckdb_views_query | SQL group by over the keypoints view returns expected counts; a 12-digit numeric drive id stays a string |
 | TASK-1 | tests/core/test_lake.py | test_empty_table_view | a table with no partition gives an empty typed view |
 | TASK-1 | tests/core/test_lake.py | test_drop_partition | the partition disappears and a missing one is a no-op |
+| TASK-1 | tests/core/test_lake.py | test_table_schemas_match_plan | field names, types, nullability of the three schemas and the TABLE_SCHEMAS keys (added during TASK-1) |
+| TASK-1 | tests/core/test_lake.py | test_zero_batches_writes_valid_empty_file | a swap with no batches writes a readable zero-row file (the docs do not state it; added after the source check) |
+| TASK-1 | tests/core/test_lake.py | test_view_over_zero_row_partition_mixed_with_data | SQL over one zero-row drive and one drive with rows returns only the rows (added after the source check) |
+| TASK-1 | tests/core/test_lake.py | test_invalid_table_and_drive_rejected | unknown table, empty id, path separators, trailing newline and non-ASCII digits raise ValueError |
+| TASK-1 | tests/core/test_lake.py | test_temp_folders_not_listed | swap folders under `_swap` never show in list_drives or in a view |
+| TASK-1 | tests/core/test_lake.py | test_foreign_folder_with_part_file_is_invisible | a foreign folder holding a part file does not change list_drives or the view (added after review) |
+| TASK-1 | tests/core/test_lake.py | test_special_characters_in_root_path | a lake root containing `[ ] { }` works through the view (`*` and `?` cannot be tested on Windows) (added after review) |
+| TASK-1 | tests/core/test_lake.py | test_invalid_drive_folder_names_not_listed | folders named `drive=a b` or `drive=` are not listed and do not break read (added after review) |
+| TASK-1 | tests/core/test_lake.py | test_drop_partition_propagates_errors | a delete error is raised and the partition stays (added after review) |
+| TASK-1 | tests/core/test_lake.py | test_interrupt_in_batches_keeps_old_partition | RuntimeError, KeyboardInterrupt and SystemExit from the batch iterator keep the old partition (added after review) |
+| TASK-1 | tests/core/test_lake.py | test_restore_failure_keeps_original_exception_with_note | a failed restore re-raises the original error with a note naming the old folder (added after review) |
+| TASK-1 | tests/core/test_lake.py | test_swap_sweeps_leftover_swap_folders | only stale (over one hour) `_swap/new-*` folders are removed by the next swap; fresh `new-*` and all `old-*` stay (added after review) |
+| TASK-1 | tests/core/test_lake.py | test_second_swap_does_not_destroy_unrestored_old_partition | after a failed restore, later swaps leave the only copy in `_swap/old-*` intact (added after review) |
+| TASK-1 | tests/core/test_lake.py | test_view_with_hive_like_segments_in_root | a root containing `env=prod` and `drive=x` segments adds no extra column to the view (added after review) |
+| TASK-1 | tests/core/test_lake.py | test_many_drives_in_one_view | 500 drives in one table return 500 rows through the view (added after review) |
+| TASK-1 | tests/core/test_lake.py | test_swap_with_open_connection_idle | on Windows a swap succeeds while an idle DuckDB connection is open (observed on this machine) (added after review) |
 | TASK-2 | tests/etl/test_config.py | test_defaults_load | config/etl.yaml loads with 9 keypoints and the 9,000 cm/s limit |
 | TASK-2 | tests/etl/test_config.py | test_env_override_lake_dir | VL_LAKE_DIR changes lake_dir |
 | TASK-2 | tests/etl/test_config.py | test_bad_keypoint_spec_rejected | an index spec with no index, or a negative index, raises |
@@ -503,7 +520,7 @@ python -m vl_data error-codes --check
 | `Teleport` is assumed to move only its own frame. If it shifts all later frames, the "last accepted frame" rule would quarantine every frame after it | med | The assumption is logged; `test_vl006_teleport_flags_one_frame` and the generator's own test show the real behaviour. If it differs, amend the rule, never loosen the limit |
 | Fixed point order is assumed. A changed order passes the count check but fails the lattice check, so the whole drive's frames are quarantined as VL-004 | low | The lattice check covers all 1,000 points, so the failure is loud |
 | Scale gap: real VL has about 1,000,000 points per frame, this has 1,000. The facts scan hashes and decodes every payload | med | Chunked streaming keeps memory bounded; the scale gap is stated as a known issue and in "coming soon" |
-| Windows locks: DuckDB or Parquet readers holding files can block the folder swap | med | `connect()` returns an in-memory connection that reads files lazily; the swap test closes readers first and the test `test_swap_over_open_reader_on_windows` covers it; the old folder is renamed aside, not overwritten |
+| Windows locks: DuckDB or Parquet readers holding files can block the folder swap | med | `connect()` returns an in-memory connection that reads files lazily; the tests `test_swap_after_connection_closed` and `test_swap_with_open_connection_idle` cover it (an idle open connection did not block a swap on this Windows machine); the old folder is renamed aside, not overwritten |
 | A crash between moving the old folder aside and moving the new one in leaves no partition | low | A rerun recreates it; the three tables are swapped one after another, not atomically; stated as a known issue |
 | DuckDB infers a 12-digit hex folder like `123456789012` as a number | low | The view reads with an explicit VARCHAR type for `drive`; `test_duckdb_views_query` uses a numeric-looking id |
 | The VL-006 limit of 9,000 cm/s is a Tesla's 322 km/h (user-confirmed) rounded up, so a faster vehicle would be flagged | low | It lives in YAML and is logged as an assumption; change the value if a faster vehicle is in scope |

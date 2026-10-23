@@ -18,6 +18,7 @@ dependencies = [
     "click>=8.2",
     "streamlit>=1.66",
     "plotly>=7.1",
+    "duckdb>=2.0,<3",
 ]
 
 [project.optional-dependencies]

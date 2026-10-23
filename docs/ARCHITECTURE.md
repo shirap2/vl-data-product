@@ -43,7 +43,7 @@ src/vl_data/
                              inverse, faults, cli, scenarios/, ui/
   etl/                       Module 2 (planned): config, keypoints, facts, rules,
                              ingest, errors_doc, cli
-  core/lake.py               Module 2 (planned): the Lake class
+  core/lake.py, lake_schemas.py   Module 2 (built): the Lake class and the table schemas
 config/default.yaml          fps, output folder, body, tolerances, fit parameters
 config/etl.yaml              Module 2 (planned): keypoint list, speed limit, chunk size
 warehouse/                   the lake (planned, git-ignored)
@@ -95,10 +95,25 @@ timestamp, and numeric measures.
 | `core/hashing.py` | `canonical_json`, `sha256_hex`, `file_sha256`, `scenario_hash` | Keys are sorted, there are no spaces, and a float with a whole value is written as an int, so 600 and 600.0 hash the same. NaN and infinity are rejected. |
 | `core/schemas.py` | `FRAMES_SCHEMA`, `GROUND_TRUTH_SCHEMA`, `encode_points`, `decode_points` | A frame's points are 1,000 x 3 int32 values in cm, little-endian, row-major, in one binary column. |
 | `core/manifest.py` | `Manifest`, `FileEntry`, `VerifyResult`, build, write, read, `verify_drive` | The manifest lists every file in the drive folder except itself. `verify_drive` reports changed, missing, extra and invalidly named files and a scenario that no longer matches its hash. A bad manifest, an unreadable file or a scenario that cannot be hashed is a reported problem, not an error. A pathological listed name (hundreds of characters) or a folder that cannot be listed can still raise an OSError. |
+| `core/lake_schemas.py` | `KEYPOINTS_SCHEMA`, `QUARANTINE_SCHEMA`, `LINEAGE_SCHEMA`, `TABLE_SCHEMAS` | One plain dict of table name to Arrow schema. A new table (for example `motion`) is one new entry; `Lake` accepts only names in this dict. |
+| `core/lake.py` | `Lake`: `swap_partition`, `drop_partition`, `list_drives`, `read`, `connect` | Layout `<root>/<table>/drive=<id>/part-0.parquet`. A swap writes a new folder under `<root>/_swap`, moves the old partition aside, renames the new one in, then deletes the old one; a failed write or rename keeps the old partition. The Parquet write options are pinned, so the same input gives the same bytes on one pyarrow version and the same batch boundaries (checked by a test). `connect()` returns an in-memory DuckDB connection with one view per table; the drive column is a VARCHAR, so a numeric-looking id is never read as a number. |
 
-## Module 2: loader and ETL (planned, not built)
+The lake class was built and run in the Module 2 plan's first task. On 2026-10-23 its 33 tests passed (83 passed in the whole suite), line coverage was 98% for `lake.py` and 100% for `lake_schemas.py` (99.37% total), and ruff and mypy strict were clean.
 
-Everything in this section is design. No number below comes from a run yet.
+What the Lake does not do:
+
+- It is single-writer. Two swaps on the same root at the same time are not supported.
+- A `_swap/old-*` folder is never deleted automatically after a failed restore, because it can be the only copy of a partition. Recover or remove it by hand. Only `new-*` folders older than an hour are swept.
+- A view reads the files that exist when `connect()` runs. Close the connection before a swap, because an open connection may hold the files on Windows. On the test machine (Windows 11, DuckDB 2.0.0) a swap succeeded while an idle connection was open.
+- Drive ids that differ only by letter case collide on Windows.
+- The glob characters `*` and `?` in the lake path could only be tested on non-Windows systems, because Windows does not allow them in file names.
+- Symlinks or junctions planted inside the lake folder are not detected.
+
+## Module 2: loader and ETL (lake built; the rest planned)
+
+The lake storage (`core/lake.py`, `core/lake_schemas.py`) is built and tested, see the core modules
+table above. The steps, rules and the ingest below are design and have not been run. No number in
+this section comes from a run.
 
 What goes in: a drive folder `data/raw/<hash12>/` with the full point cloud (1,000 points per
 frame). What comes out: three tables in the lake, `keypoints`, `quarantine` and `lineage`, each

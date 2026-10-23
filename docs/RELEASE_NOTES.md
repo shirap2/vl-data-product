@@ -91,6 +91,8 @@ exist.
 - Test tolerances come from one demo drive.
 - Loading a drive replaces its keypoints, quarantine and lineage partitions one after another, not
   as one atomic step. A crash in between is repaired by loading the drive again.
+- The lake is single-writer: load one drive at a time. A failed partition restore leaves the old
+  data in `_swap/old-<id>` for you to recover by hand; it is never deleted automatically.
 - The loader reads each drive twice, in chunks. It is built for one machine, not for a stream.
 - The loader's speed limit (9,000 cm/s) is a Tesla's top speed of 322 km/h rounded up and is set in
   a YAML file. A faster vehicle would be flagged as impossible motion.
