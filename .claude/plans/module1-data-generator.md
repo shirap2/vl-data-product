@@ -148,7 +148,7 @@ Design choices are backed by: REQ-1 to REQ-14 above, the user decisions table, a
 - `core/schemas.py`: `FRAMES_SCHEMA`, `GROUND_TRUTH_SCHEMA`, and `encode_points` / `decode_points` for the binary column. The ETL will import these.
 - `core/manifest.py`: `Manifest`, `build_manifest`, `write_manifest`, `read_manifest`, `verify_drive`.
 - `generator/models.py`: `Scenario`, `Start`, `MoveSegment`, `StopSegment`, `load_scenario`.
-- `generator/body.py`: `cube_lattice`.
+- `generator/body.py`: `cube_lattice`, and `place_body` (added in TASK-3: rounds the lattice at a position to int32 cm with a range check; `generate` calls it in TASK-4).
 - `generator/motion.py`: `frame_count`, `speed_profile`, `integrate_position`, `ground_truth_arrays`.
 - `generator/drive.py`: `Drive`, `generate`, `drive_dir_name` (builds a drive in memory, no file access).
 - `generator/writer.py`: `write_drive`, `generate_to_disk` (writes the drive folder and verifies it).
@@ -183,7 +183,7 @@ Design choices are backed by: REQ-1 to REQ-14 above, the user decisions table, a
 | create | src/vl_data/core/manifest.py | manifest | build, write, read and verify a drive's manifest |
 | create | src/vl_data/generator/__init__.py | package | exports public names |
 | create | src/vl_data/generator/models.py | scenario model | pydantic scenario, segments, validators, YAML loader |
-| create | src/vl_data/generator/body.py | body | cube lattice |
+| create | src/vl_data/generator/body.py | body | cube lattice and `place_body` (rounds the body to int32 cm at a position) |
 | create | src/vl_data/generator/motion.py | physics | speed profile, integration, ground-truth arrays |
 | create | src/vl_data/generator/drive.py | drive builder | `Drive`, `generate`, `drive_dir_name` (in memory) |
 | create | src/vl_data/generator/writer.py | drive writer | `write_drive`, `generate_to_disk` |
@@ -377,6 +377,10 @@ from numpy.typing import NDArray
 
 def cube_lattice(size_cm: int, points_per_axis: int) -> NDArray[np.int32]:
     """Return the (points_per_axis**3, 3) cube lattice in cm, x-major, from 0 to size_cm - 1."""
+    raise NotImplementedError
+
+def place_body(lattice: NDArray[np.int32], x_cm: float, y_cm: float, z_cm: float) -> NDArray[np.int32]:
+    """Return rint(lattice + [x, y, z]) as int32 cm; ValueError if non-finite or outside int32."""
     raise NotImplementedError
 ```
 

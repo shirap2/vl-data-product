@@ -85,9 +85,12 @@ pyproject.toml               packaging (hatchling), dependencies, ruff, mypy, py
 ```
 
 Built so far: the project skeleton (`pyproject.toml`, `src/vl_data/__init__.py`, `__main__.py`,
-`cli.py` with `--version`, `tests/conftest.py`, `tests/test_cli.py`) and the shared core
+`cli.py` with `--version`, `tests/conftest.py`, `tests/test_cli.py`), the shared core
 (`src/vl_data/core/` with `config.py`, `hashing.py`, `schemas.py`, `manifest.py`, plus
-`config/default.yaml` and `tests/core/`). The `generator/` folder does not exist yet.
+`config/default.yaml` and `tests/core/`), and the first three generator modules
+(`src/vl_data/generator/models.py`, `body.py`, `motion.py`, the demo scenario in
+`generator/scenarios/demo.yaml`, and `tests/generator/`). Not built yet: `drive.py`, `writer.py`,
+`inverse.py`, `faults.py`, the generator's CLI commands and the Generate tab.
 
 ### Data flow inside the generator
 
@@ -125,6 +128,30 @@ timestamp, and numeric measures.
 | `core/hashing.py` | `canonical_json`, `sha256_hex`, `file_sha256`, `scenario_hash` | Keys are sorted, there are no spaces, and a float with a whole value is written as an int, so 600 and 600.0 hash the same. NaN and infinity are rejected. |
 | `core/schemas.py` | `FRAMES_SCHEMA`, `GROUND_TRUTH_SCHEMA`, `encode_points`, `decode_points` | A frame's points are 1,000 x 3 int32 values in cm, little-endian, row-major, in one binary column. |
 | `core/manifest.py` | `Manifest`, `FileEntry`, `VerifyResult`, build, write, read, `verify_drive` | The manifest lists every file in the drive folder except itself. `verify_drive` reports changed, missing, extra and invalidly named files and a scenario that no longer matches its hash. A bad manifest, an unreadable file or a scenario that cannot be hashed is a reported problem, not an error. A pathological listed name (hundreds of characters) or a folder that cannot be listed can still raise an OSError. |
+
+#### Motion model (built)
+
+A scenario holds a start state (position in cm and speed in cm/s) and a list of segments. A
+`move` changes the speed in a straight line to an end speed (a negative speed means backward).
+A `stop` holds speed 0 and is allowed only when the vehicle is already at rest, so speed never
+jumps. Durations are in seconds and must be a whole number of frames (a multiple of 1/16 s).
+A scenario may have at most 100,000 frames (about 1 h 44 min at 16 fps).
+
+From a scenario, `motion.py` builds, frame by frame:
+
+| Step | Rule |
+|---|---|
+| Speed | A move of n frames from speed a to speed b gives `a + i * (b - a) / n` at frame i, so the end speed is reached on the first frame of the next segment. A stop gives 0. |
+| Position | Forward Euler along x: `x[0]` is the start, `x[k+1] = x[k] + speed[k] / 16`. |
+| Ground-truth velocity | `(x[k+1] - x[k]) * 16`; the last frame repeats the previous value. |
+| Ground-truth acceleration | `(speed[k+1] - speed[k]) * 16` from the speed profile; the last frame repeats the previous value. |
+| Points | `place_body` returns `rint(lattice + [x, y, z])` as int32 cm. The lattice has 10 x 10 x 10 points on 0, 11, ... 99 cm, x-major, so the 8 corners are at indices 0, 9, 90, 99, 900, 909, 990, 999. |
+
+Real values for the demo scenario (run on 2026-10-23): 1,000 frames in 8 segments; speeds from
+-300 to 600 cm/s; acceleration between -100 and 100 cm/s^2; final position 6,450.0 cm; scenario
+hash `c8f597af59a680681e1c36d760a325a699f20fed9e2a653de78a3b80d5bca5db`, so its drive folder
+is `c8f597af59a6`. A 1 cm move on x shifts every point by exactly (1, 0, 0) when positions are
+whole centimetres.
 
 ### Design choices and alternatives
 
