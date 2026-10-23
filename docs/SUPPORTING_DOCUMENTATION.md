@@ -154,8 +154,20 @@ What the Lake does not do:
 ### Module 2: loader and ETL (lake built; the rest planned)
 
 The lake storage (`core/lake.py`, `core/lake_schemas.py`) is built and tested, see the core modules
-table above. The steps, rules and the ingest below are design and have not been run. No number in
-this section comes from a run.
+table above. The ETL settings and the keypoint pick are built and tested too (below). The steps,
+rules and the ingest are design and have not been run. No number about them comes from a run.
+
+#### ETL settings and keypoints (built)
+
+| Module | What it holds | Rules worth knowing |
+|---|---|---|
+| `etl/config.py` | `EtlConfig`, `KeypointSpec`, `LimitsConfig`, `load_etl_config` | Read from `config/etl.yaml`. Unknown keys are rejected. Keypoint names use letters, digits and `_` (up to 64 characters). A keypoint index must be a real integer, so `true` or `9.0` is refused. `max_jump_cm(fps, frame_gap)` is `max_speed * frame_gap / fps + margin`, with the margin added once: 564.5 cm for one frame at 16 fps and 1,127.0 cm for two (checked by a test). Bounds: speed at most 100,000 cm/s, 256 keypoints, 100,000 frames per chunk. `VL_LAKE_DIR` overrides the lake folder when it is not empty. |
+| `etl/keypoints.py` | `extract_keypoints` | Input is frames x points x 3 integers (cm). Output is frames x keypoints x 3 float64 (cm), in the order of the keypoint list. A corner is picked by lattice index; the centroid is the float64 mean of all points. Float input and out-of-range indices are refused. |
+| `config/etl.yaml` | the nine keypoints, speed limit 9,000 cm/s, margin 2 cm, chunk size 256 | The built-in defaults in `etl/config.py` are identical to this file (checked by a test). |
+
+The default corner indices (0, 9, 90, 99, 900, 909, 990, 999) assume the 10 x 10 x 10 lattice. A different body size needs its own keypoint list in the YAML file.
+
+On 2026-10-23 these two modules had 71 tests (201 in the whole suite), and line coverage of the ETL package was 100%.
 
 What goes in: a drive folder `data/raw/<hash12>/` with the full point cloud (1,000 points per
 frame). What comes out: three tables in the lake, `keypoints`, `quarantine` and `lineage`, each

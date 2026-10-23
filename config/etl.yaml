@@ -1,0 +1,21 @@
+# ETL (loader) configuration. Lengths in cm, speeds in cm/s.
+supported_schema_versions: [1]  # raw schema versions the loader accepts
+chunk_frames: 256  # frames per processing chunk
+lake_dir: warehouse  # lake root; VL_LAKE_DIR overrides
+
+limits:
+  # A Tesla's top speed, 322 km/h = 8,944 cm/s, rounded up; faster motion is implausible.
+  max_speed_cm_s: 9000.0  # cm/s
+  rounding_margin_cm: 2.0  # cm, allowance for int cm rounding of positions
+
+# Lattice index = ix*100 + iy*10 + iz; corner names are the binary (x, y, z) end.
+keypoints:
+  - {name: corner_000, index: 0}
+  - {name: corner_001, index: 9}
+  - {name: corner_010, index: 90}
+  - {name: corner_011, index: 99}
+  - {name: corner_100, index: 900}
+  - {name: corner_101, index: 909}
+  - {name: corner_110, index: 990}
+  - {name: corner_111, index: 999}
+  - {name: centroid, kind: centroid}

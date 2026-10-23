@@ -265,7 +265,7 @@ class EtlConfig(BaseModel):
     chunk_frames: int = 256           # frames read per chunk
     lake_dir: Path = Path("warehouse")
     limits: LimitsConfig = LimitsConfig()
-    keypoints: list[KeypointSpec]
+    keypoints: list[KeypointSpec]     # default: the nine built-in keypoints (corner_000 .. corner_111, centroid); same as config/etl.yaml
 
     def max_jump_cm(self, fps: int, frame_gap: int) -> float:
         """Largest centroid distance in cm allowed across frame_gap frames."""
