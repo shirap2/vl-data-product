@@ -84,9 +84,10 @@ pyproject.toml               packaging (hatchling), dependencies, ruff, mypy, py
 .venv/                       project virtual environment (git-ignored)
 ```
 
-Built so far (project skeleton): `pyproject.toml`, `src/vl_data/__init__.py`, `__main__.py`,
-`cli.py` (the root command app with `--version`), `tests/conftest.py` and `tests/test_cli.py`.
-The `core/` and `generator/` folders and `config/default.yaml` do not exist yet.
+Built so far: the project skeleton (`pyproject.toml`, `src/vl_data/__init__.py`, `__main__.py`,
+`cli.py` with `--version`, `tests/conftest.py`, `tests/test_cli.py`) and the shared core
+(`src/vl_data/core/` with `config.py`, `hashing.py`, `schemas.py`, `manifest.py`, plus
+`config/default.yaml` and `tests/core/`). The `generator/` folder does not exist yet.
 
 ### Data flow inside the generator
 
@@ -115,6 +116,15 @@ Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 
 The warehouse tables use a generic, use-case-independent shape: a drive and frame key, a
 timestamp, and numeric measures.
+
+#### Core modules (built)
+
+| Module | What it holds | Rules worth knowing |
+|---|---|---|
+| `core/config.py` | `Config` (fps, raw_dir, body, tolerances, fit) and `load_config` | Unknown keys and non-positive values are rejected. `fps` must divide 1,000,000,000 ns evenly (16 fps gives 62,500,000 ns). The environment variable `VL_RAW_DIR` overrides `raw_dir`. |
+| `core/hashing.py` | `canonical_json`, `sha256_hex`, `file_sha256`, `scenario_hash` | Keys are sorted, there are no spaces, and a float with a whole value is written as an int, so 600 and 600.0 hash the same. NaN and infinity are rejected. |
+| `core/schemas.py` | `FRAMES_SCHEMA`, `GROUND_TRUTH_SCHEMA`, `encode_points`, `decode_points` | A frame's points are 1,000 x 3 int32 values in cm, little-endian, row-major, in one binary column. |
+| `core/manifest.py` | `Manifest`, `FileEntry`, `VerifyResult`, build, write, read, `verify_drive` | The manifest lists every file in the drive folder except itself. `verify_drive` reports changed, missing, extra and invalidly named files and a scenario that no longer matches its hash. A bad manifest, an unreadable file or a scenario that cannot be hashed is a reported problem, not an error. A pathological listed name (hundreds of characters) or a folder that cannot be listed can still raise an OSError. |
 
 ### Design choices and alternatives
 

@@ -1,0 +1,17 @@
+# Default configuration for vl_data. Units: cm, s, cm/s, frames.
+fps: 16
+raw_dir: data/raw
+body:
+  size_cm: 100
+  points_per_axis: 10
+tolerances:
+  position_cm: 0.6
+  velocity_cm_s: 17.0
+  boundary_frames: 6
+  duration_frames: 8
+  end_speed_cm_s: 40.0
+fit:
+  min_segment_frames: 8
+  noise_sigma_cm_s: 12.0
+  penalty: 40.0
+  stop_speed_cm_s: 30.0
