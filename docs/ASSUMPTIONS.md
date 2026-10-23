@@ -31,13 +31,14 @@ Updated 2026-10-23. "User" means you decided it in the planning conversation.
 | M2-D8 | The Lake class and the keypoints, quarantine and lineage schemas are built in the Module 2 plan, not in the Module 1 plan. | Module 1 has no lake code. |
 | M2-D9 | The ETL reads frames in chunks and checks `schema_version` in the manifest. | Bounded memory, and a contract change is told apart from corrupt data. |
 | M2-D10 | Every task updates its own doc sections during the task. Every number or command in a doc comes from a real run in that task. | Docs cannot drift from the code. |
+| M2-D11 | Users query the lake through a Python SDK (`VLClient`) plus SQL. The Module 3 plan builds `VLClient`, starting with reads from the Lake class. | No plan before Module 3 needs it. No web service. |
 
 ## Assumptions I made (not yet confirmed by you)
 
 | # | Assumption | Why I made it | If wrong |
 |---|---|---|---|
 | A1 | The (1,2,0) in the assignment's second-frame example is a typo for (1,1,0). | A 1 cm move on x of the point (0,1,0) gives (1,1,0). | Only the explanation changes; the code shifts every point by the same vector either way. |
-| A2 | "API" means a Python SDK plus SQL, with no web service. A REST wrapper is listed as coming soon. | Simplest thing that gives users a query interface. | Add a small FastAPI module later. |
+| A2 | "API" means a Python SDK plus SQL, with no web service. A REST wrapper is listed as coming soon. Confirmed by you on 2026-10-23. | Simplest thing that gives users a query interface. | Add a small FastAPI module later. |
 | A3 | Your answer about the cube and yaw means straight-line motion along x only (not planar motion without rotation). | You said the cube cannot show yaw and "this is what we are left with". | A planar variant would need course maths again. |
 | A4 | `start.x_cm, y_cm, z_cm` is the position of the lattice's left-back-bottom corner (the body's origin point). The centroid is 49.5 cm further on each axis. | The assignment places that corner at the origin. | Positions shift by a constant. |
 | A5 | Position is integrated with forward Euler: `x[k+1] = x[k] + v[k] / 16`. Ground-truth velocity is `(x[k+1] - x[k]) * 16` and acceleration is `(v[k+1] - v[k]) * 16`. The last frame repeats the previous value. | The decoder will compute the same differences, so the only error left is rounding. | Ground truth would differ from what a decoder sees by a small integration error. |
@@ -55,9 +56,9 @@ Updated 2026-10-23. "User" means you decided it in the planning conversation.
 | A17 | Parquet files are written with fixed options so the same scenario gives the same bytes on one pyarrow version. | Needed for a stable hash. | Hashes change when pyarrow changes. Stated as a known issue. |
 | A18 | A fault count returned by the injector is the number of injected faults per code, not the number of rows the ETL will reject. | One teleport touches two frame-to-frame jumps but is one fault. | The ETL tests must map faults to rejected frames. |
 | A19 | The Module 2 session works from the contract sent on 2026-10-23, and any contract change needs a plan amendment. | Two sessions share one design. | Rework in Module 2. |
-| A20 | The assignment has no due date. It has to be asked for. | The PDF does not state one. | None until submission. |
+| A20 | The assignment has no due date. It has to be asked for. You told me on 2026-10-23 that it is due one week from that day, which is 2026-10-30. | The PDF does not state one. | None until submission. |
 | A21 | The model name for the LLM usage doc is "Claude Sonnet 5.5, through Claude Code". | It is what this session reports. | Edit `docs/LLM_USAGE.md`. |
-| M2-A1 | The VL-006 limit is 9,000 cm/s (about 324 km/h), which is 564.5 cm per frame including a 2 cm rounding margin. | You asked for the maximum a Tesla could do. I took the fastest Tesla's claimed top speed (about 322 km/h) from memory. It is not checked against a source. | Change `max_speed_cm_s` in `config/etl.yaml`. A higher value misses small teleports. |
+| M2-A1 | The VL-006 limit is 9,000 cm/s (about 324 km/h), which is 564.5 cm per frame including a 2 cm rounding margin. | You asked for the maximum a Tesla could do. You confirmed the top speed as 322 km/h (8,944 cm/s) on 2026-10-23, and I rounded it up to 9,000 cm/s. | Change `max_speed_cm_s` in `config/etl.yaml`. A higher value misses small teleports. |
 | M2-A2 | The generator's `Teleport` fault moves only its own frame. The generator session confirmed this on 2026-10-23. One teleport makes two bad jumps (into the frame and out of it), but the rule compares with the last accepted frame, so only the teleported frame is flagged. | The fault is described as "a frame jumps by dx_cm". | If it shifts every later frame, the "compare with the last accepted frame" rule would quarantine all of them. The rule must change. |
 | M2-A3 | VL-006 compares a frame's centroid with the last accepted frame, scaled by the frame number gap, using the straight-line distance in x, y and z. | A dropped or rejected frame must not make its neighbour look like a jump. | Neighbours of quarantined frames could be flagged wrongly. |
 | M2-A4 | No ETL rule tests acceleration per frame. | Per-frame acceleration error (452 cm/s^2) is larger than the signal. | Good drives would be flagged. |
@@ -74,5 +75,4 @@ Updated 2026-10-23. "User" means you decided it in the planning conversation.
 
 ## Not decided yet
 
-- Whether the SDK-plus-SQL answer to "API" is acceptable (A2).
 - Details of Modules 3 and 4 beyond what `docs/architecture_context.txt` says. Module 2 has a written plan (`.claude/plans/module2-loader-etl.md`) that is waiting for your approval.

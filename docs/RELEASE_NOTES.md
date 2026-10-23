@@ -77,7 +77,8 @@ exist.
 - Loading a drive replaces its keypoints, quarantine and lineage partitions one after another, not
   as one atomic step. A crash in between is repaired by loading the drive again.
 - The loader reads each drive twice, in chunks. It is built for one machine, not for a stream.
-- The loader's speed limit (9,000 cm/s) is an estimate from memory and is set in a YAML file.
+- The loader's speed limit (9,000 cm/s) is a Tesla's top speed of 322 km/h rounded up and is set in
+  a YAML file. A faster vehicle would be flagged as impossible motion.
 - Per-frame acceleration is not checked by any loader rule.
 - Single machine, CPU only.
 

@@ -100,7 +100,7 @@ Module 2 verifies a drive's hashes, validates every frame (VL-001..006), reduces
 | Quarantine granularity | "Failed frame only (Recommended)" | 1 |
 | Hash failure | "Abort the ingest (Recommended)"; later superseded for the record by "Accept all four" (drive-level quarantine row for whole-file faults and hash failures) | 1, 3 |
 | What the lake stores per frame | "9 keypoints (Recommended)" | 1 |
-| VL-006 limits | "YAML config, I set them (Recommended)"; then "what is the maximum jump a tesla could do in a real drive? this should be the limit". Recorded as 9,000 cm/s (about 324 km/h), which is 564.5 cm per frame including the 2 cm margin; the figure is the assistant's reading of the fastest Tesla's claimed top speed, not checked against a source | 1, 3 |
+| VL-006 limits | "YAML config, I set them (Recommended)"; then "what is the maximum jump a tesla could do in a real drive? this should be the limit". Recorded as 9,000 cm/s (about 324 km/h), which is 564.5 cm per frame including the 2 cm margin; the user confirmed the fastest Tesla top speed as 322 km/h (8,944 cm/s), rounded up to 9,000 cm/s | 1, 3 |
 | core/ owner | "Generator plan builds it (Recommended)" | 1 |
 | Improvements | "Chunked ingest, Docs track, Schema version" | 1 |
 | Run proof | "Yes, CPU only (Recommended)" | 1 |
@@ -506,7 +506,7 @@ python -m vl_data error-codes --check
 | Windows locks: DuckDB or Parquet readers holding files can block the folder swap | med | `connect()` returns an in-memory connection that reads files lazily; the swap test closes readers first and the test `test_swap_over_open_reader_on_windows` covers it; the old folder is renamed aside, not overwritten |
 | A crash between moving the old folder aside and moving the new one in leaves no partition | low | A rerun recreates it; the three tables are swapped one after another, not atomically; stated as a known issue |
 | DuckDB infers a 12-digit hex folder like `123456789012` as a number | low | The view reads with an explicit VARCHAR type for `drive`; `test_duckdb_views_query` uses a numeric-looking id |
-| The VL-006 limit of 9,000 cm/s comes from the assistant's memory of a Tesla top speed and is unchecked | med | It lives in YAML and is logged as an assumption; change the value if you pick another |
+| The VL-006 limit of 9,000 cm/s is a Tesla's 322 km/h (user-confirmed) rounded up, so a faster vehicle would be flagged | low | It lives in YAML and is logged as an assumption; change the value if a faster vehicle is in scope |
 | A frame_id outside 0..frame_count-1 is not covered by VL-001 to VL-006 | low | The drive is rejected with code INTEGRITY and the message names the id; logged as an assumption |
 | Parquet bytes differ across pyarrow versions, so a re-ingest is only byte-identical on one version | med | Fixed write options; stated as a known issue |
 | ERROR_CODES.md text for VL-002 and VL-006 in main contradicts these decisions | low | TASK-5 regenerates the file from the registry |

@@ -201,7 +201,8 @@ partitioning and compaction, and scheduled runs with an orchestrator.
 - File hashes depend on the pyarrow version that wrote the files.
 - A re-ingest swaps three tables one after another, not as one atomic commit (see the section on
   what "not atomic" means above). Re-ingesting repairs a crash.
-- The speed limit of 9,000 cm/s comes from an unchecked memory of a Tesla top speed.
+- The speed limit of 9,000 cm/s is a Tesla's top speed (322 km/h, 8,944 cm/s) rounded up. A
+  faster vehicle would be flagged as impossible motion.
 - Tolerances come from one demo drive and may widen when the property tests run.
 
 The full assumption list is in [ASSUMPTIONS.md](ASSUMPTIONS.md).
