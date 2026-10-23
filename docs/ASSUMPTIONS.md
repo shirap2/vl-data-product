@@ -27,7 +27,7 @@ Updated 2026-10-23. "User" means you decided it in the planning conversation.
 | # | Assumption | Why I made it | If wrong |
 |---|---|---|---|
 | A1 | The (1,2,0) in the assignment's second-frame example is a typo for (1,1,0). | A 1 cm move on x of the point (0,1,0) gives (1,1,0). | Only the explanation changes; the code shifts every point by the same vector either way. |
-| A2 | "API" means a Python SDK plus SQL, with no web service. A REST wrapper is listed as coming soon. | Simplest thing that gives users a query interface. | Add a small FastAPI module later. |
+| A2 | "API" means a Python SDK plus SQL, with no web service. A REST wrapper is listed as coming soon. Confirmed by you on 2026-10-23. | Simplest thing that gives users a query interface. | Add a small FastAPI module later. |
 | A3 | Your answer about the cube and yaw means straight-line motion along x only (not planar motion without rotation). | You said the cube cannot show yaw and "this is what we are left with". | A planar variant would need course maths again. |
 | A4 | `start.x_cm, y_cm, z_cm` is the position of the lattice's left-back-bottom corner (the body's origin point). The centroid is 49.5 cm further on each axis. | The assignment places that corner at the origin. | Positions shift by a constant. |
 | A5 | Position is integrated with forward Euler: `x[k+1] = x[k] + v[k] / 16`. Ground-truth velocity is `(x[k+1] - x[k]) * 16` and acceleration is `(v[k+1] - v[k]) * 16`. The last frame repeats the previous value. | The decoder will compute the same differences, so the only error left is rounding. | Ground truth would differ from what a decoder sees by a small integration error. |
@@ -67,5 +67,5 @@ Updated 2026-10-23. "User" means you decided it in the planning conversation.
 
 ## Not decided yet
 
-- Whether the SDK-plus-SQL answer to "API" is acceptable (A2).
+- Nothing open for Module 1. The SDK-plus-SQL answer to "API" (A2) is confirmed.
 - Details of Modules 2 to 4 beyond what `docs/architecture_context.txt` says.

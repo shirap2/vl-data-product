@@ -18,7 +18,8 @@ DECISIONS
 - Lake: plain Parquet (PyArrow), Hive-style folders partitioned by drive, behind one
   Lake class (partition swap, read, list). DuckDB for SQL.
 - API: Python SDK (VLClient) + SQL. No web service (FastAPI is "coming soon").
-  This is the assistant's default; the user has not said otherwise.
+  Confirmed by the user on 2026-10-23. VLClient is built in Module 3 and reads through
+  core/lake.py, which Module 2 builds.
 - Ground truth is stored outside the warehouse and read only by the evaluation step.
 - Every file is hashed (SHA-256). manifest.json lists the scenario hash and the hash of
   every file. A lineage table links scenario hash -> file hashes -> row counts, so data
@@ -137,7 +138,7 @@ rounded with rint; planar variant, 1-D numbers re-measured in the plan)
   fresh clone. docs/ASSUMPTIONS.md logs every assumption, and each task updates it.
 
 STILL OPEN
-- The user has not confirmed the SDK-only API choice (default: SDK + SQL).
+- Nothing open for Module 1. (The API choice was confirmed on 2026-10-23, see DECISIONS.)
 
 OTHER SESSIONS
 - A Module 2 (Loader/ETL) session works in worktree-module2-loader-etl. It was told on
