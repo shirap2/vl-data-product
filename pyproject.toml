@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vl-data"
+description = "Vehicle-location data product: deterministic mock point-cloud drives, hashed and checked in both directions."
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["version"]
+dependencies = [
+    "numpy>=2.5",
+    "pandas>=3.1",
+    "pyarrow>=26.0",
+    "pydantic>=2.14",
+    "pyyaml>=6.0",
+    "typer>=0.27",
+    "click>=8.2",
+    "streamlit>=1.66",
+    "plotly>=7.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1",
+    "pytest-cov>=7.1",
+    "hypothesis>=6.170",
+    "ruff>=0.17",
+    "mypy>=2.4",
+    "types-PyYAML>=6.0",
+]
+
+[tool.hatch.version]
+path = "src/vl_data/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vl_data"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["plotly.*", "streamlit.*", "pyarrow.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["vl_data"]
+
+[tool.coverage.report]
+show_missing = true

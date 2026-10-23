@@ -44,7 +44,13 @@ config/default.yaml          fps, output folder, body, tolerances, fit parameter
 tests/                       mirrors the source folders
 docs/                        this file and the other documents
 data/raw/<hash12>/           generated drives (git-ignored)
+pyproject.toml               packaging (hatchling), dependencies, ruff, mypy, pytest, coverage
+.venv/                       project virtual environment (git-ignored)
 ```
+
+Built so far (project skeleton): `pyproject.toml`, `src/vl_data/__init__.py`, `__main__.py`,
+`cli.py` (the root command app with `--version`), `tests/conftest.py` and `tests/test_cli.py`.
+The `core/` and `generator/` folders and `config/default.yaml` do not exist yet.
 
 ## Data flow inside the generator
 

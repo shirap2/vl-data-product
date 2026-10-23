@@ -47,6 +47,14 @@ Updated 2026-10-23. "User" means you decided it in the planning conversation.
 | A19 | The Module 2 session works from the contract sent on 2026-10-23, and any contract change needs a plan amendment. | Two sessions share one design. | Rework in Module 2. |
 | A20 | The assignment has no due date. It has to be asked for. | The PDF does not state one. | None until submission. |
 | A21 | The model name for the LLM usage doc is "Claude Sonnet 5.5, through Claude Code". | It is what this session reports. | Edit `docs/LLM_USAGE.md`. |
+| A22 | The package version lives only in `src/vl_data/__init__.py`. `pyproject.toml` reads it (hatch dynamic version). | One place, so the two cannot drift. | Change both by hand if the build backend changes. |
+| A23 | The build backend is hatchling. | The packaging guide documents it and it needs little setup. | Switch to setuptools; only `pyproject.toml` changes. |
+| A24 | Dependency lower bounds equal the major.minor versions installed on 2026-10-23 (numpy 2.5, pandas 3.1, pyarrow 26.0, pydantic 2.14, typer 0.27, streamlit 1.66, plotly 7.1, pytest 9.1, pytest-cov 7.1, hypothesis 6.170, ruff 0.17, mypy 2.4), except pyyaml and types-PyYAML, which are only bounded at 6.0. | Those are the versions the checks ran on. | An older library may work but is untested. |
+| A25 | Running `python -m vl_data` with no arguments prints help and exits with code 2. | `no_args_is_help=True` on the root app; observed on 2026-10-23 and covered by `test_no_args_prints_help_and_exits_2`. Not in the plan. | The exit code depends on the click version (8.5.0 here); only the bare-invocation behaviour changes. |
+| A26 | The skeleton has four tests, two more than the plan's two: `test_module_entry_point_runs` and `test_no_args_prints_help_and_exits_2`. | Without the first, `__main__.py` was 0% covered and the skeleton reached 76.9%, under the 80% bar. The second covers the `no_args_is_help` behaviour of A25. | Remove one only if its behaviour is covered another way. |
+| A27 | Python 3.11 is the declared minimum but only 3.12.6 was tested. | Only 3.12 is installed on this machine. | A 3.11-only failure would appear on a 3.11 machine. |
+| A28 | Run proofs are run directly with the project venv and recorded by hand in `.claude/run-proofs/` (log, exit code, a note that the record was hand-written). You accepted this on 2026-10-23. | The loop's helper `forgeloopp_run.py` imports `fcntl`, so it cannot run on Windows. | Use the helper if it gets Windows support. |
+| A29 | `click>=8.2` is pinned in `pyproject.toml`. | `test_no_args_prints_help_and_exits_2` relies on click 8.2 or newer exiting with code 2. | Older click exits 0 for a bare invocation. |
 
 ## Not decided yet
 

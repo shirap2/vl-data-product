@@ -16,3 +16,7 @@ docs/*.md
 !docs/ASSUMPTIONS.md
 !docs/ARCHITECTURE.md
 !docs/SUPPORTING_DOCUMENTATION.md
+.coverage
+.claude/clean-code/
+.claude/run-proofs/
+.hypothesis/
