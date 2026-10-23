@@ -14,3 +14,4 @@ docs/*.md
 !docs/RELEASE_NOTES.md
 !docs/ERROR_CODES.md
 !docs/ASSUMPTIONS.md
+!docs/ARCHITECTURE.md
