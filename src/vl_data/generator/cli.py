@@ -1,4 +1,4 @@
-"""Generator commands: generate and verify."""
+"""Generator commands: generate, verify and roundtrip."""
 
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -8,14 +8,22 @@ import yaml
 
 from vl_data.core.config import load_config
 from vl_data.core.manifest import read_manifest, verify_drive
+from vl_data.generator.drive import generate as generate_drive
+from vl_data.generator.inverse import (
+    MIN_RELIABLE_SEGMENT_FRAMES,
+    compare_scenarios,
+    infer_scenario,
+    short_segments,
+)
 from vl_data.generator.models import load_scenario
 from vl_data.generator.writer import generate_to_disk
 
 
 def register(app: typer.Typer) -> None:
-    """Add the generate and verify commands to the root app."""
+    """Add the generate, verify and roundtrip commands to the root app."""
     app.command("generate")(generate)
     app.command("verify")(verify)
+    app.command("roundtrip")(roundtrip)
 
 
 def _exit_with_error(message: str) -> NoReturn:
@@ -62,3 +70,39 @@ def verify(drive_dir: Annotated[Path, typer.Argument(help="Drive folder to check
             typer.echo(problem, err=True)
         raise typer.Exit(code=1)
     typer.echo("manifest: verified")
+
+
+def roundtrip(
+    scenario: Annotated[Path, typer.Option("--scenario", help="Scenario YAML file.")],
+) -> None:
+    """Generate in memory, infer the scenario back, compare to tolerances; exit 1 on failure.
+
+    Writes nothing to disk. Units: boundary and duration errors in frames, end speed in cm/s.
+    """
+    config = load_config()
+    try:
+        loaded = load_scenario(scenario)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        _exit_with_error(f"cannot load scenario {scenario}: {exc}")
+    for index, frames in short_segments(loaded, config.fps):
+        typer.echo(
+            f"warning: segment {index} is {frames} frames; the round trip is only tested for "
+            f"segments of {MIN_RELIABLE_SEGMENT_FRAMES} frames or more, so a result for this "
+            "segment is outside the tested range (ASSUMPTIONS A14)",
+            err=True,
+        )
+    try:
+        drive = generate_drive(loaded, config)
+        inferred = infer_scenario(drive.frames, config)
+    except ValueError as exc:
+        _exit_with_error(f"cannot round-trip scenario: {exc}")
+    report = compare_scenarios(drive.scenario, inferred, config.tolerances, config.fps)
+    typer.echo(f"segments: expected {len(drive.scenario.segments)}, found {len(inferred.segments)}")
+    if not report.ok:
+        for problem in report.problems:
+            typer.echo(problem, err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"max_boundary_error_frames: {report.max_boundary_error_frames}")
+    typer.echo(f"max_duration_error_frames: {report.max_duration_error_frames}")
+    typer.echo(f"max_end_speed_error_cm_s: {report.max_end_speed_error_cm_s:.1f}")
+    typer.echo("round trip OK")

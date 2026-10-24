@@ -130,3 +130,107 @@ def test_generate_out_is_a_file(runner: CliRunner, tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert "error:" in result.stderr
     assert "Traceback" not in result.output
+
+
+def test_roundtrip_command(runner: CliRunner) -> None:
+    """The command prints "round trip OK" and exits 0."""
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(DEMO)])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert "segments: expected 8, found 8" in lines
+    assert "round trip OK" in lines
+    values = {x.split(": ")[0]: float(x.split(": ")[1]) for x in lines if "max_" in x}
+    assert values["max_boundary_error_frames"] <= 6
+    assert values["max_duration_error_frames"] <= 8
+    assert values["max_end_speed_error_cm_s"] <= 40
+
+
+def test_roundtrip_missing_scenario_exits_1(runner: CliRunner, tmp_path: Path) -> None:
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(tmp_path / "nope.yaml")])
+    assert result.exit_code == 1
+    assert "error: cannot load scenario" in result.output
+
+
+def test_roundtrip_failed_comparison_exits_1(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed comparison prints the segment line and the problems, and exits 1."""
+    from vl_data.generator import cli as gen_cli
+    from vl_data.generator.inverse import RoundTripReport
+
+    bad = RoundTripReport(False, ["segment 0: expected stop, found move"], 0, 0, 0.0)
+    monkeypatch.setattr(gen_cli, "compare_scenarios", lambda *a, **k: bad)
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(DEMO)])
+    assert result.exit_code == 1
+    assert "segments: expected 8, found 8" in result.output
+    assert "segment 0: expected stop, found move" in result.output
+    assert "round trip OK" not in result.output
+
+
+def test_roundtrip_unbuildable_scenario_exits_1(runner: CliRunner, tmp_path: Path) -> None:
+    """A scenario whose body leaves the int32 cm range gives one error line, exit 1."""
+    path = tmp_path / "far.yaml"
+    path.write_text(
+        "start: {x_cm: 1000000000000000.0}\nsegments:\n  - {type: stop, duration_s: 1.0}\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(path)])
+    assert result.exit_code == 1
+    assert "error: cannot round-trip scenario" in result.output
+
+
+def test_roundtrip_warns_about_short_segments(runner: CliRunner, tmp_path: Path) -> None:
+    """Segments under 32 frames get a warning before the result, whatever the outcome."""
+    path = tmp_path / "short.yaml"
+    path.write_text(
+        "start: {x_cm: 0.0}\nsegments:\n"
+        "  - {type: stop, duration_s: 2.0}\n"
+        "  - {type: move, duration_s: 1.0, end_speed_cm_s: 100.0}\n"
+        "  - {type: move, duration_s: 1.0, end_speed_cm_s: 0.0}\n"
+        "  - {type: stop, duration_s: 2.0}\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(path)])
+    warnings = result.stderr.splitlines()
+    assert len(warnings) == 2
+    assert warnings[0].startswith("warning: segment 1 is 16 frames;")
+    assert warnings[1].startswith("warning: segment 2 is 16 frames;")
+    assert "32 frames or more" in warnings[0]
+    # the warnings go to stderr only; stdout keeps the result lines
+    assert "warning" not in result.stdout
+    assert result.stdout.splitlines()[0] == "segments: expected 4, found 4"
+    # the warnings come before the result in the combined stream
+    combined = result.output.splitlines()
+    assert combined.index(warnings[1]) < combined.index("segments: expected 4, found 4")
+    # the exit code and the result line are the command's own; the warning does not change them
+    assert result.exit_code in (0, 1)
+    assert ("round trip OK" in result.stdout) == (result.exit_code == 0)
+
+
+def test_roundtrip_warns_when_comparison_fails(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warning is printed even when the comparison fails and the command exits 1."""
+    from vl_data.generator import cli as gen_cli
+    from vl_data.generator.inverse import RoundTripReport
+
+    path = tmp_path / "short.yaml"
+    path.write_text(
+        "start: {x_cm: 0.0}\nsegments:\n"
+        "  - {type: move, duration_s: 1.0, end_speed_cm_s: 100.0}\n"
+        "  - {type: move, duration_s: 1.0, end_speed_cm_s: 0.0}\n",
+        encoding="utf-8",
+    )
+    bad = RoundTripReport(False, ["segment 0: expected move, found stop"], 0, 0, 0.0)
+    monkeypatch.setattr(gen_cli, "compare_scenarios", lambda *a, **k: bad)
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(path)])
+    assert result.exit_code == 1
+    assert result.stderr.splitlines()[0].startswith("warning: segment 0 is 16 frames;")
+    assert "round trip OK" not in result.stdout
+
+
+def test_roundtrip_demo_has_no_warning(runner: CliRunner) -> None:
+    """The demo (shortest segment 32 frames) prints no warning."""
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(DEMO)])
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""

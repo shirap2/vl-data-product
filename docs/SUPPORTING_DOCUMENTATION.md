@@ -100,8 +100,7 @@ Built so far: the project skeleton (`pyproject.toml`, `src/vl_data/__init__.py`,
 (`src/vl_data/generator/models.py`, `body.py`, `motion.py`, the demo scenario in
 `generator/scenarios/demo.yaml`, and `tests/generator/`), then the drive builder and writer
 (`drive.py`, `writer.py`) and the generator's `generate` and `verify` commands (`generator/cli.py`,
-registered by the root `cli.py`). Not built yet: `inverse.py`, `faults.py`, the `roundtrip` command
-and the Generate tab.
+registered by the root `cli.py`). The back direction (`inverse.py`) and the `roundtrip` command are built, and so is the fault-injection helper (`faults.py`). Not built yet: the Generate tab.
 
 ### Data flow inside the generator
 
@@ -287,8 +286,8 @@ recovers per-frame position and velocity from the frames, `fit_segments` fits mo
 pieces to them, and `compare_scenarios` checks the result against the original within stated
 limits. The back direction reads frames only, never ground truth.
 
-Limits measured on one demo drive (a throwaway script, 2026-10-23), and the limit set for the
-tests:
+Limits measured on the demo drive (2026-10-24; run log `.claude/run-proofs/TASK-5-measure.log`, local, git-ignored (A28), from `python -m vl_data roundtrip`
+and `.claude/run-proofs/TASK-5-measure.py`), and the limit set in `config/default.yaml`:
 
 | Quantity | Measured max | Test limit |
 |---|---|---|
@@ -298,9 +297,64 @@ tests:
 | Segment duration error | 5 frames | 8 frames |
 | End-speed error | 24.4 cm/s | 40 cm/s |
 
-Per-frame acceleration error reached 452 cm/s^2, larger than the demo's own signal (up to
-100 cm/s^2), so acceleration is fitted over windows (6.8 cm/s^2 over 16 frames). All of this
-error comes from rounding the points to whole centimetres.
+The earlier figures in `architecture_context.txt` (0.66 cm and 17.6 cm/s; not logged, not evidence) came from a planar
+variant that is not in the repo; the 1-D numbers above come from the logged run (0.498 cm,
+15.0 cm/s). The developer's throwaway run also reported a per-frame acceleration error of
+452 cm/s^2, larger than the demo's own signal (up to 100 cm/s^2), and 6.8 cm/s^2 when fitted over
+16-frame windows; those two figures are not logged and are not evidence. The rounding of the
+points to whole centimetres is the source of the logged errors.
+
+How the back direction works (`generator/inverse.py`): `infer_track` takes the mean x of each
+frame's points minus the lattice centre; velocity is the forward difference times 16. `fit_segments`
+splits the velocity series into linear pieces by penalised optimal partitioning (noise sigma 12 cm/s,
+penalty 40, pieces of at least 8 frames), extrapolates each line to its piece boundary for the end
+speed, and calls a piece a stop when its speed stays under 30 cm/s. A snap rule then makes the
+result a valid scenario (stops at 0 cm/s, the move before a stop ends at 0, a 0 -> 0 move is merged
+into the stops; ASSUMPTIONS A53). The demo gives 8 segments of the right types.
+
+Search domain of the property test (ASSUMPTIONS A14; see `_scenarios()` in
+`tests/generator/test_inverse.py`): up to 7 draws that each add a segment or are skipped, at most
+1,600 frames, 32 to 160 frames per segment, move end speeds on a 10 cm/s grid within +-600 cm/s,
+a nonzero end speed of at least 100 cm/s in size, stops only at rest, and a slope change of at
+least 50 cm/s^2 from the previous segment. The running slope starts at 0, so a first move also
+needs a slope of at least 50 cm/s^2 in size. One exception: when every draw is skipped, the
+strategy falls back to a single 16-frame stop, below the 32-frame minimum.
+Logged runs outside the domain (local, git-ignored, A28): 16-frame segments 0 -> 460 -> -180 -> 0
+gave an end-speed error of 42.4 cm/s, 24-frame segments 0 -> -460 -> 490 -> 0 gave 40.8 cm/s
+(limit 40), and 0 -> 100 -> 110 cm/s at 16 frames each (slope change 90 cm/s^2) was fitted as one
+piece, so shorter segments are not covered. A 3,000-example stress run was reported but is not
+logged; only the committed 40-example derandomized test is evidence.
+Decision (2026-10-24, user): keep this 32-frame domain (ASSUMPTIONS A14). `roundtrip` therefore
+prints a `warning:` line on stderr for every segment under 32 frames
+(`MIN_RELIABLE_SEGMENT_FRAMES`).
+
+### Fault injection
+
+`generator/faults.py` builds bad drives on purpose so Module 2 can be tested against known errors.
+`inject_faults(drive, faults)` returns a new `Drive` and a dict of counts per error code. Only the
+frames table changes; the ground truth, the scenario and the scenario hash are copied unchanged, and
+the input drive is not modified. A faulty drive can be written with `write_drive` and still passes
+`verify_drive`, because the manifest is built from the faulty file.
+
+| Fault | Code | What it does to the frames table |
+|-------|------|----------------------------------|
+| `DropFrame(frame_id)` | VL-001 | Deletes that row. The other frame ids are not renumbered. |
+| `ShiftTimestamp(frame_id, delta_ns)` | VL-002 | Adds `delta_ns` (ns) to that frame's `timestamp_ns` only. |
+| `DuplicateFrame(frame_id)` | VL-003 | Inserts a copy of the row right after the original (same frame id and timestamp). |
+| `CorruptPoints(frame_id)` | VL-004 | Removes the last point (12 bytes) from that frame, so its length is (n - 1) x 12 bytes. |
+| `BreakSchema()` | VL-005 | Renames the column `points` to `pts`. |
+| `Teleport(frame_id, dx_cm)` | VL-006 | Adds `dx_cm` (cm) to the x coordinate of every point of that frame only. |
+
+Rules (ASSUMPTIONS A59 to A62): a fault finds its row by the `frame_id` value in the original drive,
+so an earlier drop or duplicate never moves the target. The returned dict holds only the codes that
+were injected, and each count is the number of fault objects with that code. These inputs raise
+`ValueError` instead of being applied: repeated `frame_id` values in the original table; an unknown
+`frame_id`; two faults on the same `frame_id` (including the same fault twice); a second
+`BreakSchema`; `delta_ns == 0`; `dx_cm == 0`; a `delta_ns` that leaves int64 or makes the
+timestamp equal to the row before or after; any two rows (a `DuplicateFrame` copy excepted) that
+end with the same timestamp; `CorruptPoints` on a frame with under 12 bytes; and a `dx_cm` that
+overflows int32. Each fault is intended to trigger its own code; Module 2 behaviour is not yet
+verified.
 
 ### Error handling
 
@@ -412,11 +466,34 @@ was changed in a copy, it printed `changed: ground_truth.parquet (sha256 mismatc
 exited with code 1. A missing or invalid scenario file gives a one-line `error: ...` message and
 exit code 1.
 
-Planned, not yet run (arrives with the inverse functions):
+Check that the generator can read its own drive back (the two-way check). Run on 2026-10-24,
+it took 1.41 s wall time and writes nothing to disk (log: `.claude/run-proofs/TASK-5-measure.log`, local, git-ignored (A28)):
 
 ```powershell
 python -m vl_data roundtrip --scenario src/vl_data/generator/scenarios/demo.yaml
 ```
+
+It prints:
+
+```text
+segments: expected 8, found 8
+max_boundary_error_frames: 4
+max_duration_error_frames: 5
+max_end_speed_error_cm_s: 24.4
+round trip OK
+```
+
+The same log records the exit code (0) and the demo-drive errors against ground truth: maximum centroid
+x error 0.498 cm and maximum velocity error 15.0 cm/s (`.claude/run-proofs/TASK-5-measure.py`).
+
+The limits are 6 frames, 8 frames and 40 cm/s (`tolerances` in `config/default.yaml`). If a
+check fails, the segment line and one line per problem are printed (problems on stderr) and the
+exit code is 1. A missing or invalid scenario file gives a one-line `error: ...` message and
+exit code 1.
+
+The check is only tested for segments of 32 frames (2 s) or more (A14). For every segment under
+32 frames the command prints one line such as `warning: segment 1 is 16 frames; ...` on stderr
+before the result. The demo prints no warning, because its shortest segment is exactly 32 frames.
 
 A scenario file looks like this:
 
@@ -461,6 +538,8 @@ exist.
 - Plain Parquet has no atomic multi-file commit, no schema-evolution tracking and no time travel.
   Writing a drive is not safe for concurrent writers.
 - Test tolerances come from one demo drive.
+- The two-way check (`roundtrip`) is only tested for segments of 32 frames (2 s) or more. Shorter
+  segments can merge into one fitted piece or miss the end-speed limit; the command warns.
 - Loading a drive replaces its keypoints, quarantine and lineage partitions one after another, not
   as one atomic step. A crash in between is repaired by loading the drive again.
 - The lake is single-writer: load one drive at a time. A failed partition restore leaves the old
