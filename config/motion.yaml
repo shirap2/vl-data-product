@@ -1,0 +1,10 @@
+# Motion (use-case algorithm) configuration. Lengths in cm, speeds in cm/s, accelerations in cm/s^2.
+# PROVISIONAL: these values are placeholders until the TASK-3 sweep replaces them.
+window_frames: 16  # frames in the sliding fit window
+poly_order: 2  # polynomial order of the local fit (2 or 3)
+min_points: 5  # fewest valid frames in a window needed to fit
+max_gap_frames: 4  # largest allowed spacing between neighbouring window points, in frame intervals (4 bridges 3 missing frames)
+position_keypoint: centroid  # keypoint name from config/etl.yaml
+tolerances:
+  velocity_cm_s: 20.0  # cm/s
+  acceleration_cm_s2: 60.0  # cm/s^2

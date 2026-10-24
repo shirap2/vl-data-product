@@ -1,7 +1,7 @@
 # Assumptions and decisions log
 
 Every assumption made while planning, who made it, and what changes if it is wrong.
-Updated 2026-10-23. "User" means you decided it in the planning conversation.
+Updated 2026-10-24. "User" means you decided it in the planning conversation.
 "Assistant" means I assumed it and you have not confirmed it yet.
 
 ## Decisions you made
@@ -127,6 +127,12 @@ Updated 2026-10-23. "User" means you decided it in the planning conversation.
 | M2-A26 | Chunks are sized in MiB of int32 xyz point data (`chunk_mib`, default 128), not in frames. | At 12 MB per frame a fixed frame count (256 frames = 3 GB) would exhaust memory on a 15.7 GB machine. | Lower `chunk_mib` if memory is tight. The Parquet row group the generator writes (about 50 frames, 600 MB) is read whole, so memory is at least that. |
 | M2-A27 | Until the generator adds body keys to the manifest, `etl/body.py` takes points per axis from the integer cube root of `points_per_frame` and `size_cm` from the core config. | The manifest has no body keys yet; the generator will send the exact names (and bump `schema_version`) before it edits core. | A manifest with body keys must take precedence; only `drive_body` changes. |
 | M2-A25 | `tests/etl/` has an `__init__.py`, and `tests/core/` has none. | `tests/etl/test_config.py` and `tests/core/test_config.py` share a file name; without the package marker pytest fails at collection. | Rename one file and drop the marker. |
+| M3-A1 | The motion position keypoint is named `centroid`; that name comes from `config/etl.yaml` (the keypoints list), and `position_keypoint` in `config/motion.yaml` must match a name there. | The Module 3 algorithm reads one keypoint per frame from the lake. | If the ETL renames the keypoint, `config/motion.yaml` must change with it; the config loader does not check the name against the ETL config. |
+| M3-A2 | The defaults in `config/motion.yaml` (window 16 frames, order 2, 5 minimum points, 4 frame gap, tolerances 20 cm/s and 60 cm/s^2; config values, not measured) are provisional until the TASK-3 sweep replaces them. | They are starting points, not measured values. | Results before the sweep depend on guesses; re-run after the sweep. |
+| M3-A3 | The estimator window for frame i holds the samples within `window_frames`/2 frame intervals either side of t_i (centred; one-sided at the first and last frames, so edge windows hold about half the points). | A centred window gives an unbiased fit inside the clip; the edges still get an estimate. | Edge estimates are noisier than interior ones; narrow or widen `window_frames` if the edges matter. |
+| M3-A4 | Gap rule: a window is rejected when any two consecutive samples in it are more than `max_gap_frames` frame intervals apart (real timestamps; a tolerance of 1e-6 of a frame interval is added to both the window edges and this gap check), or when it holds fewer than `min_points` samples. A gap of exactly `max_gap_frames` is accepted. | Fits across long holes are extrapolation, not measurement. | A tighter limit gives more NaN; a looser one lets the fit bridge occlusions. |
+| M3-A5 | NaN in the estimator outputs means "no estimate", not zero or a failure; `n_points` still holds the window count. Callers must skip or report NaN frames rather than treat them as zero motion. | Missing data must not look like standing still. | Averaging over NaN without masking gives NaN results. |
+| M3-A6 | `n_points` is the count of samples inside the window, and it is reported even when the output is NaN. The window spans `window_frames`/2 frame intervals either side of t_i, so an even `window_frames` gives `window_frames` + 1 points in a full interior window, and an odd one gives `window_frames` points. | The count lets callers see why a frame has no estimate. | Reading `n_points` as the number of valid fits, or as exactly `window_frames`, is wrong. |
 
 ## Not decided yet
 
