@@ -77,7 +77,9 @@ def test_zero_points_rejected() -> None:
 
 def test_index_out_of_range_rejected() -> None:
     with pytest.raises(ValueError):
-        extract_keypoints(np.zeros((1, 10, 3), dtype=np.int32), [SPECS[2]])
+        extract_keypoints(
+            np.zeros((1, 10, 3), dtype=np.int32), [KeypointSpec(name="far", index=999)]
+        )
 
 
 def test_index_boundary() -> None:
@@ -92,6 +94,12 @@ def test_negative_index_rejected() -> None:
     spec = KeypointSpec.model_construct(name="neg", kind="index", index=-1)
     with pytest.raises(ValueError):
         extract_keypoints(np.zeros((1, 10, 3), dtype=np.int32), [spec])
+
+
+def test_corner_without_bits_rejected() -> None:
+    spec = KeypointSpec.model_construct(name="nobits", kind="corner", bits=None)
+    with pytest.raises(ValueError):
+        extract_keypoints(np.zeros((1, 8, 3), dtype=np.int32), [spec])
 
 
 def test_zero_frames() -> None:
@@ -140,3 +148,32 @@ def test_two_centroid_specs_identical() -> None:
     ]
     out = extract_keypoints(_frames(cube_lattice(100, 10), 2), specs)
     np.testing.assert_array_equal(out[:, 0], out[:, 1])
+
+
+def test_corner_kind_derives_index_from_density() -> None:
+    lat10 = cube_lattice(100, 10)
+    out = extract_keypoints(_frames(lat10), SPECS)
+    for k, idx in enumerate([0, 9, 90, 99, 900, 909, 990, 999]):
+        np.testing.assert_array_equal(out[0, k], lat10[idx])
+    np.testing.assert_allclose(out[0, 8], [49.5, 49.5, 49.5])
+
+    lat100 = cube_lattice(100, 100)
+    out = extract_keypoints(_frames(lat100), SPECS)
+    indices = [0, 99, 9900, 9999, 990000, 990099, 999900, 999999]
+    for k, idx in enumerate(indices):
+        np.testing.assert_array_equal(out[0, k], lat100[idx])
+    for k, spec in enumerate(SPECS[:8]):
+        assert spec.bits is not None
+        np.testing.assert_array_equal(out[0, k], [b * 99 for b in spec.bits])
+    np.testing.assert_allclose(out[0, 8], [49.5, 49.5, 49.5])
+
+
+def test_corner_kind_rejects_non_cube_point_count() -> None:
+    corner = [KeypointSpec(name="c", kind="corner", bits=(1, 1, 1))]
+    for n_points in (999, 1001, 1):
+        with pytest.raises(ValueError):
+            extract_keypoints(np.zeros((1, n_points, 3), dtype=np.int32), corner)
+    pts = np.arange(24, dtype=np.int32).reshape(1, 8, 3)
+    np.testing.assert_array_equal(extract_keypoints(pts, corner)[0, 0], [21, 22, 23])
+    mid = [KeypointSpec(name="m", kind="corner", bits=(0, 1, 0))]
+    np.testing.assert_array_equal(extract_keypoints(pts, mid)[0, 0], [6, 7, 8])

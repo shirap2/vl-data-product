@@ -15,22 +15,31 @@ DEFAULT_ETL_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "etl.
 
 
 class KeypointSpec(BaseModel):
-    """One keypoint: a single body point by lattice index, or the centroid of all points."""
+    """One keypoint: a lattice index, a cube corner, or the centroid of all points."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(pattern=r"^[A-Za-z0-9_]{1,64}$")  # keypoint name
-    kind: Literal["index", "centroid"] = "index"
+    kind: Literal["index", "corner", "centroid"] = "index"
     index: StrictInt | None = None  # point index in the body lattice; only for kind "index"
+    # (x, y, z) corner bits, each 0 (low end) or 1 (high end); only for kind "corner"
+    bits: tuple[StrictInt, StrictInt, StrictInt] | None = None
 
     @model_validator(mode="after")
     def _check_spec(self) -> "KeypointSpec":
-        """Require an index >= 0 for kind "index" and no index for "centroid"."""
+        """Require index for "index", bits for "corner", and neither for "centroid"."""
         if self.kind == "index":
             if self.index is None or self.index < 0:
                 raise ValueError(f"keypoint {self.name!r}: kind 'index' needs an index >= 0")
-        elif self.index is not None:
-            raise ValueError(f"keypoint {self.name!r}: kind 'centroid' takes no index")
+            if self.bits is not None:
+                raise ValueError(f"keypoint {self.name!r}: kind 'index' takes no bits")
+        elif self.kind == "corner":
+            if self.bits is None or any(b not in (0, 1) for b in self.bits):
+                raise ValueError(f"keypoint {self.name!r}: kind 'corner' needs bits of 0 or 1")
+            if self.index is not None:
+                raise ValueError(f"keypoint {self.name!r}: kind 'corner' takes no index")
+        elif self.index is not None or self.bits is not None:
+            raise ValueError(f"keypoint {self.name!r}: kind 'centroid' takes no index or bits")
         return self
 
 
@@ -46,7 +55,7 @@ class LimitsConfig(BaseModel):
 def _default_keypoints() -> list[KeypointSpec]:
     """The eight lattice corners (binary x, y, z) and the centroid."""
     corners = [
-        KeypointSpec(name=f"corner_{x}{y}{z}", index=x * 900 + y * 90 + z * 9)
+        KeypointSpec(name=f"corner_{x}{y}{z}", kind="corner", bits=(x, y, z))
         for x in (0, 1)
         for y in (0, 1)
         for z in (0, 1)
@@ -62,7 +71,8 @@ class EtlConfig(BaseModel):
     supported_schema_versions: list[StrictInt] = Field(
         default=[1], min_length=1, max_length=16
     )  # raw schema versions the loader accepts
-    chunk_frames: int = Field(default=256, ge=1, le=100_000)  # frames per processing chunk
+    # MiB of raw int32 xyz data per chunk; peak memory is about 2-3x this (payload + decoded copy)
+    chunk_mib: int = Field(default=128, ge=1, le=1024)
     lake_dir: Path = Path("warehouse")  # lake root
     limits: LimitsConfig = LimitsConfig()
     keypoints: list[KeypointSpec] = Field(
@@ -78,6 +88,15 @@ class EtlConfig(BaseModel):
         if len(set(names)) != len(names):
             raise ValueError("keypoint names must be unique")
         return self
+
+    def chunk_frames(self, points_per_frame: int) -> int:
+        """Frames per processing chunk: chunk_mib MiB of int32 xyz data, at least 1.
+
+        Raises ValueError if points_per_frame < 1.
+        """
+        if points_per_frame < 1:
+            raise ValueError(f"points_per_frame must be at least 1, got {points_per_frame}")
+        return max(1, (self.chunk_mib * 2**20) // (points_per_frame * 12))
 
     def max_jump_cm(self, fps: int, frame_gap: int) -> float:
         """Largest plausible keypoint move in cm across frame_gap frames at fps frames/s.

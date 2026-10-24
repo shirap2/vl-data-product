@@ -16,14 +16,14 @@ def _no_lake_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 CORNERS = {
-    "corner_000": 0,
-    "corner_001": 9,
-    "corner_010": 90,
-    "corner_011": 99,
-    "corner_100": 900,
-    "corner_101": 909,
-    "corner_110": 990,
-    "corner_111": 999,
+    "corner_000": (0, 0, 0),
+    "corner_001": (0, 0, 1),
+    "corner_010": (0, 1, 0),
+    "corner_011": (0, 1, 1),
+    "corner_100": (1, 0, 0),
+    "corner_101": (1, 0, 1),
+    "corner_110": (1, 1, 0),
+    "corner_111": (1, 1, 1),
 }
 
 
@@ -31,11 +31,11 @@ def _check_defaults(cfg: EtlConfig) -> None:
     assert len(cfg.keypoints) == 9
     assert cfg.limits.max_speed_cm_s == 9000.0
     assert cfg.limits.rounding_margin_cm == 2.0
-    assert cfg.chunk_frames == 256
+    assert cfg.chunk_mib == 128
     assert cfg.supported_schema_versions == [1]
     assert cfg.lake_dir == Path("warehouse")
-    for spec, (name, index) in zip(cfg.keypoints[:8], CORNERS.items(), strict=True):
-        assert (spec.name, spec.kind, spec.index) == (name, "index", index)
+    for spec, (name, bits) in zip(cfg.keypoints[:8], CORNERS.items(), strict=True):
+        assert (spec.name, spec.kind, spec.bits, spec.index) == (name, "corner", bits, None)
     assert (cfg.keypoints[8].name, cfg.keypoints[8].kind) == ("centroid", "centroid")
     assert cfg.keypoints[8].index is None
 
@@ -133,15 +133,59 @@ def test_bad_schema_versions_rejected(versions: list[int]) -> None:
         EtlConfig(supported_schema_versions=versions)
 
 
-def test_chunk_frames_zero_rejected() -> None:
+def test_chunk_mib_zero_rejected() -> None:
     with pytest.raises(ValidationError):
-        EtlConfig(chunk_frames=0)
+        EtlConfig(chunk_mib=0)
 
 
-def test_chunk_frames_above_cap_rejected() -> None:
-    assert EtlConfig(chunk_frames=100_000).chunk_frames == 100_000
+def test_chunk_mib_above_cap_rejected() -> None:
+    assert EtlConfig(chunk_mib=1024).chunk_mib == 1024
     with pytest.raises(ValidationError):
-        EtlConfig(chunk_frames=100_001)
+        EtlConfig(chunk_mib=1025)
+
+
+def test_chunk_frames_from_chunk_mib() -> None:
+    cfg = EtlConfig()
+    assert cfg.chunk_frames(1_000) == 11184
+    assert cfg.chunk_frames(1_000_000) == 11
+    assert EtlConfig(chunk_mib=1).chunk_frames(1_000) == 87
+    assert EtlConfig(chunk_mib=1024).chunk_frames(1_000_000) == 89
+    assert EtlConfig(chunk_mib=1).chunk_frames(10_000_000) == 1  # at least one frame
+    for bad in (0, -5):
+        with pytest.raises(ValueError):
+            cfg.chunk_frames(bad)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"name": "a", "kind": "corner"},
+        {"name": "a", "kind": "corner", "bits": [0, 1]},
+        {"name": "a", "kind": "corner", "bits": [0, 1, 0, 1]},
+        {"name": "a", "kind": "corner", "bits": [0, 2, 0]},
+        {"name": "a", "kind": "corner", "bits": [0, -1, 0]},
+        {"name": "a", "kind": "corner", "bits": [True, False, True]},
+        {"name": "a", "kind": "corner", "bits": [0.0, 1.0, 0.0]},
+        {"name": "a", "kind": "corner", "bits": [0, 0, 1], "index": 0},
+        {"name": "a", "kind": "index", "index": 0, "bits": [0, 0, 1]},
+        {"name": "a", "kind": "centroid", "bits": [0, 0, 1]},
+    ],
+)
+def test_corner_spec_validation(bad: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        KeypointSpec.model_validate(bad)
+    ok = KeypointSpec.model_validate({"name": "a", "kind": "corner", "bits": [1, 0, 1]})
+    assert ok.bits == (1, 0, 1)
+    assert ok.index is None
+
+
+def test_defaults_use_corner_kind() -> None:
+    builtin = EtlConfig().keypoints
+    assert [(k.name, k.kind, k.bits) for k in builtin[:8]] == [
+        (name, "corner", bits) for name, bits in CORNERS.items()
+    ]
+    assert builtin[8].kind == "centroid"
+    assert load_etl_config(etl_config.DEFAULT_ETL_CONFIG_PATH).keypoints == builtin
 
 
 def test_too_many_keypoints_rejected() -> None:

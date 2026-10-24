@@ -14,7 +14,8 @@ Module 2 verifies a drive's hashes, validates every frame (VL-001..006), reduces
 
 - The assignment asks for an ETL "for converting the data per your use case" and a data warehouse holding "the converted data for user query (more generic data structure will be better)". It also says the data source is mocked and that not all data needs saving. [assignment.pdf, section 3 items 2a to 2c]
 - The assignment asks for a list of the possible error codes. This plan owns that list (VL-001 to VL-006) and generates it from the rule registry. [assignment.pdf, section 3 item 3a; architecture_context.txt "ASSIGNMENT COVERAGE"]
-- The signal is a point cloud at 16 frames per second. The generator writes a 1 m cube as a 10x10x10 lattice of 1,000 points, one row per frame, in `data/raw/<hash12>/`. [assignment.pdf 1.2; architecture_context.txt "MODULE 1"; module1-data-generator.md "Design" items 3 and 4]
+- AMENDMENT 2026-10-24 (user decision in the generator session, then confirmed here): the generator will move to the real density, 100 x 100 x 100 = 1,000,000 points per frame (about 12 MB per frame, about 12 GB per 1,000-frame drive). The generator plan follows after its TASK-6; its manifest will describe the body (key names not decided yet). This plan therefore never hard-codes the 10 x 10 x 10 sample: points per frame, the lattice, the payload size and the corner indices come from the drive's own body settings, and chunks are sized by bytes. Tests use small bodies; the final proof uses full density.
+- The signal is a point cloud at 16 frames per second. The generator writes a 1 m cube as a lattice of `points_per_axis` cubed points (today 10 x 10 x 10 = 1,000; planned 100 x 100 x 100), one row per frame, in `data/raw/<hash12>/`. [assignment.pdf 1.2; architecture_context.txt "MODULE 1"; module1-data-generator.md "Design" items 3 and 4]
 - The use case is the ego vehicle's velocity and acceleration. Position along x is the base signal. The centroid of a frame gives the position. [architecture_context.txt "DECISIONS", "MODULE 3"]
 - The input contract is the user-approved Module 1 plan: the `frames.parquet` schema, the manifest keys, `verify_drive`, `decode_points`, the fault classes and `inject_faults`. Nothing of it is built or merged yet. [module1-data-generator.md "Design", "Classes / Functions / Signatures"; message from the generator session, 2026-10-23]
 - Measured by the Module 1 plan on a throwaway script: position error up to 0.498 cm, per-frame velocity error up to 15 cm/s, per-frame acceleration error up to 452 cm/s^2. Acceleration is therefore unusable per frame, so no ETL rule tests acceleration. [module1-data-generator.md "Context"]
@@ -50,9 +51,9 @@ Module 2 verifies a drive's hashes, validates every frame (VL-001..006), reduces
 
 - REQ-1: Before reading any frame, the ETL reads the manifest and runs `verify_drive`. A changed, missing or extra file, an unreadable manifest, an unsupported `schema_version`, or a folder name that is not the first 12 hex of the manifest hash rejects the whole drive. A rejected drive writes one quarantine row per problem (code `INTEGRITY`), a lineage row with status `rejected`, and removes any keypoints of that drive. The CLI exits non-zero. [user decisions: hash failure, whole-drive faults; Module 1 plan REQ-6]
 - REQ-2: A frames table whose schema differs from the agreed frames schema is VL-005. It rejects the whole drive in the same way, with code VL-005. [user decision: whole-drive faults; architecture_context.txt "MODULE 2"]
-- REQ-3: Each frame is checked by the rule registry. VL-001: a frame_id in 0..frame_count-1 is absent (one quarantine row per missing id). VL-002: a timestamp is not `frame_id * 62,500,000` ns. VL-003: a frame_id appears more than once (identical copies: keep the first and quarantine the repeats; copies that differ: quarantine all). VL-004: the payload is not 1,000 x 3 int32 or the points are not the expected lattice. VL-006: the centroid is farther from the last accepted frame than the speed limit allows. Only the failed frame goes to quarantine. [user decisions: quarantine granularity, VL-001, VL-002, VL-003, VL-004; architecture_context.txt "MODULE 2"]
+- REQ-3: Each frame is checked by the rule registry. VL-001: a frame_id in 0..frame_count-1 is absent (one quarantine row per missing id). VL-002: a timestamp is not `frame_id * 62,500,000` ns. VL-003: a frame_id appears more than once (identical copies: keep the first and quarantine the repeats; copies that differ: quarantine all). VL-004: the payload is not `points_per_frame` x 3 int32 (the drive's own points per frame, `points_per_axis` cubed) or the points are not the expected lattice for the drive's body. VL-006: the centroid is farther from the last accepted frame than the speed limit allows. Only the failed frame goes to quarantine. [user decisions: quarantine granularity, VL-001, VL-002, VL-003, VL-004; architecture_context.txt "MODULE 2"]
 - REQ-4: VL-006 compares the centroid of a frame with the last accepted frame. The allowed distance is `max_speed / fps * (frame_id gap) + rounding margin`, with the maximum speed 9,000 cm/s and the margin 2 cm, both in YAML. No rule tests acceleration. [user decision: VL-006 limit; Module 1 plan "Context" measurements]
-- REQ-5: Each accepted frame is reduced to the keypoints listed in YAML: the 8 cube corners by lattice index (0, 9, 90, 99, 900, 909, 990, 999) and the centroid. The keypoints table has one row per keypoint (long layout). [user decision: 9 keypoints, long layout; architecture_context.txt "MODULE 2"]
+- REQ-5: Each accepted frame is reduced to the keypoints listed in YAML: the 8 cube corners and the centroid. A corner is named by its bits (x, y, z), each 0 or 1, and its lattice index is derived from the drive's `points_per_axis` n: `bx*(n-1)*n*n + by*(n-1)*n + bz*(n-1)` (n = 10 gives 0, 9, 90, 99, 900, 909, 990, 999; n = 100 gives 0, 99, 9900, 9999, 990000, 990099, 999900, 999999). The keypoints table has one row per keypoint (long layout). [user decision: 9 keypoints, long layout; architecture_context.txt "MODULE 2"]
 - REQ-6: The lake has three tables, `keypoints`, `quarantine`, `lineage`, as Parquet folders partitioned by drive (`<table>/drive=<hash12>/`), behind one `Lake` class with partition swap, read, list and a DuckDB connection with a view per table. [architecture_context.txt "DECISIONS"; assignment.pdf 3.2c]
 - REQ-7: Re-ingesting a drive replaces its partitions and leaves the lake identical. A failed write keeps the old partition. The swap works on Windows. The lineage row holds no wall-clock time. [architecture_context.txt "MODULE 2"; user decision: risks]
 - REQ-8: The ETL reads `frames.parquet` in chunks of a configured number of frames, never the whole drive at once. [user decision: chunked ingest]
@@ -83,7 +84,7 @@ Module 2 verifies a drive's hashes, validates every frame (VL-001..006), reduces
 
 ## Success Criteria
 
-- A clean demo drive (1,000 frames) ingests with 1,000 frames kept, 0 quarantined, and 9,000 keypoint rows (9 per frame).
+- A clean demo drive (1,000 frames, at the density the generator produces: 1,000 points per frame today, 1,000,000 planned) ingests with 1,000 frames kept, 0 quarantined, and 9,000 keypoint rows (9 per frame). The real run reports its wall time and peak memory.
 - Each of the five frame faults (VL-001, VL-002, VL-003, VL-004, VL-006), injected one at a time into the demo drive, gives exactly one quarantine row with its own code, and the other frames stay in keypoints (999 frames kept; for VL-001 the file has 999 frames and all 999 are kept).
 - VL-005 (renamed points column) rejects the whole drive: one VL-005 row, no keypoints, status `rejected`.
 - A changed byte in `frames.parquet` rejects the drive: no keypoints, one `INTEGRITY` row, status `rejected`, exit code 1.
@@ -112,6 +113,7 @@ Module 2 verifies a drive's hashes, validates every frame (VL-001..006), reduces
 | Quarantine row content | "Accept all four": details only (the raw frame stays in data/raw) | 3 |
 | Duplicate frames (VL-003) | "Accept all four": keep the first if the copies are identical, else quarantine all | 3 |
 | Docs rule | "Yes, apply it" | 3 |
+| Full-density change (2026-10-24) | "Yes, amend and build parametric (Recommended)": amend the plan so TASK-3 to TASK-5 work at any density derived from the manifest, with small bodies in tests; the generator's own move to 1,000,000 points per frame was decided by the user in the generator session | amendment |
 | VL-004 check | "All 1,000 points vs the lattice (Recommended)" | 3 |
 | VL-002 meaning | "Compare to frame_id x 62.5 ms (Recommended)" | 3 |
 | Missing frames (VL-001) | "One quarantine row per missing frame_id (Recommended)" | 3 |
@@ -127,9 +129,9 @@ The ETL is a pipeline of small, separately testable steps with one entry point, 
 
 1. **Gate on integrity** (REQ-1, REQ-15). Read the manifest, call Module 1's `verify_drive`, check `schema_version`, and check that the folder name equals the first 12 hex of the manifest hash. Any failure rejects the drive before any frame is read.
 2. **Gate on schema** (REQ-2). Open `frames.parquet` with `pq.ParquetFile` and compare its schema with `FRAMES_SCHEMA`. A mismatch is VL-005 and rejects the drive. Only metadata is read.
-3. **Scan, pass 1** (REQ-3, REQ-8, REQ-9). Stream the file in chunks (`iter_batches`). For each row, record one small "fact": row index, frame_id, timestamp, payload byte length, payload SHA-256, whether the payload is a valid cloud, and the centroid. A cloud is valid when it decodes to 1,000 x 3 int32 and every point minus the first point equals the expected lattice offsets (this also proves the fixed point order the keypoint pick depends on). The facts table has one row per frame, so memory stays small.
+3. **Scan, pass 1** (REQ-3, REQ-8, REQ-9). Stream the file in chunks (`iter_batches`). For each row, record one small "fact": row index, frame_id, timestamp, payload byte length, payload SHA-256, whether the payload is a valid cloud, and the centroid. A cloud is valid when it decodes to `points_per_frame` x 3 int32 and every point minus the first point equals the expected lattice offsets (this also proves the fixed point order the keypoint pick depends on). The facts table has one row per frame, so memory stays small.
 4. **Rules** (REQ-3, REQ-4). A registry of six `Rule` objects, each with its code, name, meaning, detection text and example fault. VL-001 to VL-004 run on the facts table. VL-006 runs only on frames that passed the other rules and compares each centroid with the last accepted one, scaled by the frame_id gap, so one bad frame never poisons its neighbours. The registry also drives the generated error-code document.
-5. **Reduce, pass 2** (REQ-5, REQ-8). Stream the file again, keep the accepted rows, and pick the keypoints by index from the decoded array. The centroid is the mean of the 1,000 points. Batches go straight into the lake writer.
+5. **Reduce, pass 2** (REQ-5, REQ-8). Stream the file again, keep the accepted rows, and pick the keypoints by index from the decoded array. The centroid is the mean of all the frame's points. Batches go straight into the lake writer.
 6. **Write** (REQ-6, REQ-7). The `Lake` writes each table's new partition into a temporary folder, then moves the old folder aside, moves the new one in, and deletes the old one. A failure while writing leaves the old partition untouched. Rerunning fixes a crash between the moves. The lineage row carries counts and hashes but no clock time, so a re-ingest is byte-identical.
 7. **Docs** (REQ-11, REQ-12). `render_error_codes()` builds `docs/ERROR_CODES.md` from the registry. Each task also edits its own doc sections.
 
@@ -141,6 +143,7 @@ Design choices are backed by REQ-1 to REQ-15, the user decisions table, and the 
 - `core/lake.py`: `Lake`. Swaps, reads and lists partitions and gives a DuckDB connection with one view per table.
 - `etl/config.py`: `EtlConfig`, `KeypointSpec`, `LimitsConfig`, `load_etl_config`. Reads `config/etl.yaml`; `VL_LAKE_DIR` overrides the lake folder.
 - `etl/keypoints.py`: `extract_keypoints`. Picks corners by index and computes the centroid.
+- `etl/body.py`: `drive_body`. Gives the ETL the drive's own body (size and points per axis) from its manifest, so no density is hard-coded.
 - `etl/facts.py`: `scan_frames`. Pass 1: one fact row per frame, streamed.
 - `etl/rules.py`: `Rule`, `RuleContext`, `RULES`, `run_rules`. The six rules and the registry.
 - `etl/ingest.py`: `ingest_drive`, `IngestResult`. Runs the gates, scan, rules, reduction and writes.
@@ -172,6 +175,8 @@ Design choices are backed by REQ-1 to REQ-15, the user decisions table, and the 
 | create | src/vl_data/etl/__init__.py | package | exports `ingest_drive`, `IngestResult` |
 | create | src/vl_data/etl/config.py | ETL config | pydantic models and YAML loader with `VL_LAKE_DIR` override |
 | create | src/vl_data/etl/keypoints.py | reduction | `extract_keypoints` |
+| create | src/vl_data/etl/body.py | drive body | `drive_body`: the body (size_cm, points_per_axis) a drive was generated with, read from its manifest (amendment) |
+| create | tests/etl/test_body.py | tests | drive_body from a manifest with and without body keys (amendment) |
 | create | src/vl_data/etl/facts.py | scan pass 1 | `scan_frames`, streamed |
 | create | src/vl_data/etl/rules.py | rules | registry and six rules |
 | create | src/vl_data/etl/ingest.py | orchestration | gates, scan, rules, reduction, writes |
@@ -253,8 +258,9 @@ from pydantic import BaseModel
 
 class KeypointSpec(BaseModel):
     name: str
-    kind: Literal["index", "centroid"] = "index"
-    index: int | None = None          # lattice index, required when kind == "index"
+    kind: Literal["index", "corner", "centroid"] = "index"
+    index: int | None = None          # explicit lattice index, required when kind == "index"
+    bits: tuple[int, int, int] | None = None   # corner (x, y, z), each 0 or 1, required when kind == "corner"
 
 class LimitsConfig(BaseModel):
     max_speed_cm_s: float = 9000.0    # cm/s, fastest speed the ETL accepts
@@ -262,10 +268,14 @@ class LimitsConfig(BaseModel):
 
 class EtlConfig(BaseModel):
     supported_schema_versions: list[int] = [1]
-    chunk_frames: int = 256           # frames read per chunk
+    chunk_mib: int = 128              # MiB of raw point data read per chunk (replaces chunk_frames, amended 2026-10-24)
     lake_dir: Path = Path("warehouse")
     limits: LimitsConfig = LimitsConfig()
     keypoints: list[KeypointSpec]     # default: the nine built-in keypoints (corner_000 .. corner_111, centroid); same as config/etl.yaml
+
+    def chunk_frames(self, points_per_frame: int) -> int:
+        """Frames per chunk so that a chunk holds about chunk_mib MiB of int32 xyz points (at least 1)."""
+        raise NotImplementedError
 
     def max_jump_cm(self, fps: int, frame_gap: int) -> float:
         """Largest centroid distance in cm allowed across frame_gap frames."""
@@ -284,6 +294,18 @@ from vl_data.etl.config import KeypointSpec
 
 def extract_keypoints(points: NDArray[np.int32], specs: list[KeypointSpec]) -> NDArray[np.float64]:
     """From (frames, n, 3) int32 cm points return (frames, len(specs), 3) float64 cm; centroid is the mean."""
+    raise NotImplementedError
+```
+
+```python
+# file: src/vl_data/etl/body.py
+from vl_data.core.config import BodyConfig
+from vl_data.core.manifest import Manifest
+
+def drive_body(manifest: Manifest, fallback: BodyConfig) -> BodyConfig:
+    """Body of the drive: the manifest's body keys when present (names to be agreed with the generator);
+    otherwise points_per_axis = round(cbrt(points_per_frame)) checked by cube, and size_cm from fallback.
+    Raises ValueError if points_per_frame is not a perfect cube."""
     raise NotImplementedError
 ```
 
@@ -404,8 +426,14 @@ def error_codes(write: bool = False, check: bool = False) -> None:
   - REQs covered: REQ-4, REQ-5, REQ-12, REQ-13
   - Source: pydantic docs, PyYAML docs, numpy docs, architecture_context.txt
 
+- TASK-2b (amendment 2026-10-24): Density-independent keypoints, byte-sized chunks and the drive-body adapter
+  - Depends on: TASK-2
+  - Files: src/vl_data/etl/config.py, keypoints.py, body.py, config/etl.yaml, tests/etl/test_config.py, tests/etl/test_keypoints.py, tests/etl/test_body.py, docs/ARCHITECTURE.md, docs/ASSUMPTIONS.md
+  - REQs covered: REQ-4, REQ-5, REQ-8, REQ-12, REQ-13
+  - Source: pydantic docs, numpy docs, architecture_context.txt, the user's full-density decision
+
 - TASK-3: Frame scan and rule registry (VL-001 to VL-006)
-  - Depends on: TASK-2, Module 1 TASK-4 and TASK-6 merged (writer, fault injection)
+  - Depends on: TASK-2b, Module 1 TASK-4 and TASK-6 merged (writer, fault injection)
   - Files: src/vl_data/etl/facts.py, rules.py, tests/etl/test_facts.py, tests/etl/test_rules.py, tests/conftest.py, docs/ARCHITECTURE.md (rules section), docs/ASSUMPTIONS.md
   - REQs covered: REQ-2, REQ-3, REQ-4, REQ-8, REQ-9, REQ-12, REQ-13
   - Source: PyArrow docs, pandas docs, hashlib docs, assignment.pdf
@@ -458,6 +486,13 @@ def error_codes(write: bool = False, check: bool = False) -> None:
 | TASK-2 | tests/etl/test_keypoints.py | test_corners_by_index | corner names map to lattice indices 0, 9, 90, 99, 900, 909, 990, 999 |
 | TASK-2 | tests/etl/test_keypoints.py | test_centroid_is_mean | the centroid of a shifted lattice equals the shift plus 49.5 cm |
 | TASK-2 | tests/etl/test_keypoints.py | test_shift_moves_all_keypoints | a 1 cm x shift moves every keypoint by exactly (1, 0, 0) |
+| TASK-2b | tests/etl/test_keypoints.py | test_corner_kind_derives_index_from_density | kind "corner" with bits picks lattice indices 0, 9, 90, 99, 900, 909, 990, 999 at 10 points per axis and 0, 99, 9900, 9999, 990000, 990099, 999900, 999999 at 100 points per axis |
+| TASK-2b | tests/etl/test_keypoints.py | test_corner_kind_rejects_non_cube_point_count | a point count that is not a cube raises ValueError |
+| TASK-2b | tests/etl/test_config.py | test_chunk_frames_from_chunk_mib | chunk_frames(points_per_frame) is at least 1 and scales inversely with the points per frame (for example 11,184 frames at 1,000 points and 11 frames at 1,000,000 points for 128 MiB) |
+| TASK-2b | tests/etl/test_config.py | test_corner_spec_validation | kind "corner" needs bits of 0 or 1; "index" and "centroid" take no bits |
+| TASK-2b | tests/etl/test_config.py | test_defaults_use_corner_kind | the built-in keypoints and config/etl.yaml use kind "corner" for the eight corners and are identical |
+| TASK-2b | tests/etl/test_body.py | test_body_from_points_per_frame | 1,000 points per frame gives 10 per axis and 1,000,000 gives 100, size_cm from the fallback |
+| TASK-2b | tests/etl/test_body.py | test_body_rejects_non_cube | 999 or 1,001 points per frame raises ValueError |
 | TASK-3 | tests/etl/test_facts.py | test_one_fact_per_row | a 1,000-frame drive gives 1,000 fact rows with matching ids and hashes |
 | TASK-3 | tests/etl/test_facts.py | test_chunking_gives_same_facts | chunk sizes 1, 7 and 256 give identical facts |
 | TASK-3 | tests/etl/test_facts.py | test_corrupt_payload_not_cloud_ok | a 999-point payload and a moved point are cloud_ok False with no crash |
@@ -519,7 +554,8 @@ python -m vl_data error-codes --check
 | Nothing from Module 1 is built or merged, so this branch cannot start TASK-1 | high | Tasks name the Module 1 task each needs; merge Module 1 into this branch first |
 | `Teleport` is assumed to move only its own frame. If it shifts all later frames, the "last accepted frame" rule would quarantine every frame after it | med | The assumption is logged; `test_vl006_teleport_flags_one_frame` and the generator's own test show the real behaviour. If it differs, amend the rule, never loosen the limit |
 | Fixed point order is assumed. A changed order passes the count check but fails the lattice check, so the whole drive's frames are quarantined as VL-004 | low | The lattice check covers all 1,000 points, so the failure is loud |
-| Scale gap: real VL has about 1,000,000 points per frame, this has 1,000. The facts scan hashes and decodes every payload | med | Chunked streaming keeps memory bounded; the scale gap is stated as a known issue and in "coming soon" |
+| Full density (planned by the generator): about 12 MB per frame and about 12 GB per 1,000-frame drive. The facts scan hashes, decodes and checks every payload, in two passes, so an ingest may take minutes. This machine has 15.7 GB of RAM and 414 GB of free disk | high | Chunks are sized in MiB (`chunk_mib`), not frames; row groups are about 50 frames; the real time and peak memory are measured in the TASK-5 run and written to the docs; tests use small bodies; if the full-density run is too slow, report it before the deadline instead of weakening the checks |
+| The generator's manifest does not yet say what body (size and points per axis) a drive has; the key names are not decided | med | `etl/body.py` reads the drive's body from the manifest when present and otherwise derives `points_per_axis` from `points_per_frame` and takes `size_cm` from the core config; the generator will send the exact keys (and bump `schema_version` to 2 if the layout changes) before it edits core |
 | Windows locks: DuckDB or Parquet readers holding files can block the folder swap | med | `connect()` returns an in-memory connection that reads files lazily; the tests `test_swap_after_connection_closed` and `test_swap_with_open_connection_idle` cover it (an idle open connection did not block a swap on this Windows machine); the old folder is renamed aside, not overwritten |
 | A crash between moving the old folder aside and moving the new one in leaves no partition | low | A rerun recreates it; the three tables are swapped one after another, not atomically; stated as a known issue |
 | DuckDB infers a 12-digit hex folder like `123456789012` as a number | low | The view reads with an explicit VARCHAR type for `drive`; `test_duckdb_views_query` uses a numeric-looking id |
@@ -536,6 +572,7 @@ python -m vl_data error-codes --check
 **Acceptance criteria for implement-loop**:
 - TASK-1: the lake swaps, reads, lists and drops partitions; a failed write keeps the old partition; DuckDB views query the tables, including an empty table; re-swap is byte-identical.
 - TASK-2: `config/etl.yaml` loads with 9 keypoints and the 9,000 cm/s limit; `VL_LAKE_DIR` overrides the lake folder; keypoints are picked by index and the centroid is the mean; a 1 cm x shift moves all keypoints by (1, 0, 0).
+- TASK-2b: the nine keypoints are derived from the drive's `points_per_axis` (corner indices at 10 and at 100 points per axis are exactly the ones listed in REQ-5); chunk size is set in MiB and converted to frames from the points per frame; `drive_body` returns the body from a manifest; `config/etl.yaml` and the built-in defaults still agree.
 - TASK-3: the facts scan streams in chunks with identical results for any chunk size; each rule flags exactly its fault and nothing else; VL-006 respects the gap and the baseline rule; a clean drive gives zero violations; ground truth is never opened.
 - TASK-4: a clean drive gives 1,000 kept and 9,000 keypoint rows; each fault gives one quarantine row; every whole-drive failure writes a drive-level row, a rejected lineage row and no keypoints; re-ingest is byte-identical; lineage ties the scenario hash to both file hashes and the counts.
 - TASK-5: the CLI prints the summary and exits 0 or 1 as stated; `error-codes --check` passes on the regenerated document; the example faults are real; the end-to-end test queries the lake with SQL.
@@ -579,6 +616,19 @@ RUN_PROOF (TASK-2, ETL config and keypoints):
     - output contains "test_shift_moves_all_keypoints PASSED"
   exercises: YAML config, the speed limit, index-based keypoint pick, the centroid
 
+RUN_PROOF (TASK-2b, Density-independent keypoints, chunks and drive body):
+  device: cpu
+  command: python -m pytest tests/etl/test_config.py tests/etl/test_keypoints.py tests/etl/test_body.py -v
+  cwd: repo root
+  timeout: 00:10:00
+  pass_criteria:
+    - exit code 0
+    - output contains "test_corner_kind_derives_index_from_density PASSED"
+    - output contains "test_chunk_frames_from_chunk_mib PASSED"
+    - output contains "test_body_from_points_per_frame PASSED"
+    - output contains no "FAILED"
+  exercises: corner indices at 10 and 100 points per axis, byte-sized chunks, the drive-body adapter
+
 RUN_PROOF (TASK-3, Frame scan and rules):
   device: cpu
   command: python -m pytest tests/etl/test_facts.py tests/etl/test_rules.py -v
@@ -609,15 +659,16 @@ RUN_PROOF (TASK-5, CLI, error-code document, end to end):
   device: cpu
   command: python -m vl_data generate --scenario src/vl_data/generator/scenarios/demo.yaml --out data/raw; if ($?) { python -m vl_data ingest --all data/raw --lake-dir warehouse }
   cwd: repo root
-  timeout: 00:10:00
+  timeout: 01:00:00
   pass_criteria:
     - exit code 0
     - output contains "frames_expected: 1000"
     - output contains "frames_kept: 1000"
     - output contains "frames_quarantined: 0"
     - output contains "keypoint_rows: 9000"
-    - output contains "points_per_frame_in: 1000" and "keypoints_per_frame_out: 9"
+    - output contains "points_per_frame_in:" with the same value as the `points_per_frame:` line printed by the generate step (1000 today, 1000000 at full density), and "keypoints_per_frame_out: 9"
     - output contains "status: ok"
+    - the run reports elapsed seconds (recorded in the run-proof record and the docs; no pass threshold, it is a measurement)
   exercises: the generator-to-lake path from the command line, the summary, the exit code
 
 RUN_PROOF (TASK-5, error-code document and faulty drives):

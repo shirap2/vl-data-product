@@ -1,6 +1,6 @@
 # ETL (loader) configuration. Lengths in cm, speeds in cm/s.
 supported_schema_versions: [1]  # raw schema versions the loader accepts
-chunk_frames: 256  # frames per processing chunk
+chunk_mib: 128  # MiB of raw int32 xyz point data per chunk (12 bytes per point)
 lake_dir: warehouse  # lake root; VL_LAKE_DIR overrides
 
 limits:
@@ -8,14 +8,15 @@ limits:
   max_speed_cm_s: 9000.0  # cm/s
   rounding_margin_cm: 2.0  # cm, allowance for int cm rounding of positions
 
-# Lattice index = ix*100 + iy*10 + iz; corner names are the binary (x, y, z) end.
+# Corner bits are (x, y, z), 0 = low end, 1 = high end. The lattice index is derived from the
+# drive's points per axis n: bx*(n-1)*n*n + by*(n-1)*n + bz*(n-1), so any density works.
 keypoints:
-  - {name: corner_000, index: 0}
-  - {name: corner_001, index: 9}
-  - {name: corner_010, index: 90}
-  - {name: corner_011, index: 99}
-  - {name: corner_100, index: 900}
-  - {name: corner_101, index: 909}
-  - {name: corner_110, index: 990}
-  - {name: corner_111, index: 999}
+  - {name: corner_000, kind: corner, bits: [0, 0, 0]}
+  - {name: corner_001, kind: corner, bits: [0, 0, 1]}
+  - {name: corner_010, kind: corner, bits: [0, 1, 0]}
+  - {name: corner_011, kind: corner, bits: [0, 1, 1]}
+  - {name: corner_100, kind: corner, bits: [1, 0, 0]}
+  - {name: corner_101, kind: corner, bits: [1, 0, 1]}
+  - {name: corner_110, kind: corner, bits: [1, 1, 0]}
+  - {name: corner_111, kind: corner, bits: [1, 1, 1]}
   - {name: centroid, kind: centroid}
