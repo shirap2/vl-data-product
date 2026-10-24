@@ -149,7 +149,17 @@ rules and the ingest are design and have not been run. No number about them come
 
 The corner lattice indices are derived from the number of points per axis n as `bx*(n-1)*n*n + by*(n-1)*n + bz*(n-1)`: 0, 9, 90, 99, 900, 909, 990, 999 at n = 10, and 0, 99, 9900, 9999, 990000, 990099, 999900, 999999 at n = 100 (both checked by a test). The ETL gets n from the drive: `etl/body.py` takes it from the manifest's `points_per_frame` (the integer cube root) and the cube size from the core config, until the generator adds body keys to the manifest. A timing check on 2026-10-24 showed `extract_keypoints` takes 0.045 s for 4 frames of 1,000,000 points (48 MB) on the development machine (Windows 11, 15.7 GB RAM).
 
-On 2026-10-23 these two modules had 71 tests (201 in the whole suite), and line coverage of the ETL package was 100%.
+### Frame scan and rules (built)
+
+| Module | What it holds | Rules worth knowing |
+|---|---|---|
+| `etl/facts.py` | `scan_frames` | Streams `frames.parquet` in chunks and returns one small record per row: frame number, timestamp, payload size, payload SHA-256, whether the cloud is valid, centroid. A bad payload never raises; a null frame number or timestamp, or a missing column, raises one `ValueError` (the caller checks the schema first). It never opens the ground-truth file. The size is checked before the payload is decoded. |
+| `etl/rules.py` | `RULES`, `RuleContext`, `run_rules` | Six rules with their codes, meaning, detection text and example fault. Drive rules (VL-005) and frame rules (VL-001 to VL-004, VL-006). VL-006 runs only on frames that passed the others. |
+| `etl/body.py` | `expected_frame_count` | The number of frames the scenario implies, used by VL-001. |
+
+On 2026-10-24 the ETL package had 151 tests (381 in the whole suite), and line coverage of the ETL package was 99%. Running the rules on the demo drive (1,000 frames on a 125-point test body) gave no violations, and each of the six generator faults produced exactly its own code. The full-density behaviour of the scan is not measured yet.
+
+On 2026-10-23 the settings and keypoint modules had 71 tests (201 in the whole suite), and line coverage of the ETL package was 100%.
 
 What goes in: a drive folder `data/raw/<hash12>/` with the full point cloud (1,000 points per
 frame). What comes out: three tables in the lake, `keypoints`, `quarantine` and `lineage`, each
@@ -163,18 +173,21 @@ Steps for one drive:
 3. **Scan, pass 1.** Read the frames file in chunks. For each frame keep a small record: frame
    number, timestamp, payload size, payload hash, whether the points form the expected cube,
    and the centroid. Memory stays small because only these records are kept.
-4. **Rules.** Run VL-001 to VL-004 on the records. Run VL-006 only on frames that passed those,
-   comparing each centroid with the last accepted frame.
+4. **Rules.** Run VL-001 to VL-004 on the records. Run VL-006 only on frames that passed those.
+   VL-006 first picks a trusted starting frame: among the first three clean frames it takes the
+   pair that agrees most tightly (distance as a fraction of the allowed jump) and starts from the
+   earlier frame of that pair, so a teleported first frame cannot poison the rest. After that it
+   compares each centroid with the last accepted frame.
 5. **Reduce, pass 2.** Read the file again, keep the accepted frames, and pick the 8 corners by
    index plus the centroid.
 6. **Write.** Write each table's new partition aside, then swap it in for the old one.
 
 | Code | Rule in short |
 |---|---|
-| VL-001 | A frame number from 0 to frame_count-1 is absent. One row per missing number. |
+| VL-001 | A frame number from 0 to the expected count minus 1 is absent. One row per missing number. The expected count comes from the scenario stored in the manifest (its hash is verified), not from `manifest.frame_count`, which counts the rows of the file. |
 | VL-002 | The timestamp is not `frame_id x 62,500,000 ns`. |
 | VL-003 | A frame number appears twice. Identical copies keep the first. Differing copies are all quarantined. |
-| VL-004 | The payload is not 1,000 x 3 int32, or the points are not the expected lattice. |
+| VL-004 | The payload is not a multiple of 12 bytes, does not hold the drive's points per frame, or a point is more than rounding away from the expected lattice (per axis, the offsets from the lattice may spread by at most 1 cm). A single point moved by exactly 1 cm is not caught. |
 | VL-005 | The frames file's columns differ from the agreed schema. Rejects the drive. |
 | VL-006 | The centroid is farther from the last accepted frame than 9,000 cm/s allows (about 564.5 cm per frame, with a 2 cm margin). |
 

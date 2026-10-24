@@ -154,6 +154,8 @@ exist.
 - The loader's speed limit (9,000 cm/s) is a Tesla's top speed of 322 km/h rounded up and is set in
   a YAML file. A faster vehicle would be flagged as impossible motion.
 - Per-frame acceleration is not checked by any loader rule.
+- The point-cloud check (VL-004) allows for the 1 cm rounding wobble of whole-centimetre points. A single point moved by exactly 1 cm is not detected; a move of 2 cm or more is.
+- The loader decides which frame is a teleport by comparing positions. If the first three clean frames of a drive are themselves inconsistent, the loader trusts the most tightly agreeing pair; a drive that starts with several bad frames may be judged wrongly.
 - Single machine, CPU only.
 
 ## Coming soon

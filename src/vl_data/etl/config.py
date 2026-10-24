@@ -51,6 +51,18 @@ class LimitsConfig(BaseModel):
     max_speed_cm_s: float = Field(default=9000.0, gt=0, le=100_000, allow_inf_nan=False)  # cm/s
     rounding_margin_cm: float = Field(default=2.0, ge=0, allow_inf_nan=False)  # cm
 
+    def max_jump_cm(self, fps: int, frame_gap: int) -> float:
+        """Largest plausible keypoint move in cm across frame_gap frames at fps frames/s.
+
+        max_speed_cm_s * frame_gap / fps + rounding_margin_cm (margin added once).
+        Raises ValueError if fps < 1 or frame_gap < 1.
+        """
+        if fps < 1:
+            raise ValueError(f"fps must be at least 1, got {fps}")
+        if frame_gap < 1:
+            raise ValueError(f"frame_gap must be at least 1, got {frame_gap}")
+        return self.max_speed_cm_s * frame_gap / fps + self.rounding_margin_cm
+
 
 def _default_keypoints() -> list[KeypointSpec]:
     """The eight lattice corners (binary x, y, z) and the centroid."""
@@ -101,14 +113,9 @@ class EtlConfig(BaseModel):
     def max_jump_cm(self, fps: int, frame_gap: int) -> float:
         """Largest plausible keypoint move in cm across frame_gap frames at fps frames/s.
 
-        max_speed_cm_s * frame_gap / fps + rounding_margin_cm (margin added once).
-        Raises ValueError if fps < 1 or frame_gap < 1.
+        Delegates to LimitsConfig.max_jump_cm. Raises ValueError if fps < 1 or frame_gap < 1.
         """
-        if fps < 1:
-            raise ValueError(f"fps must be at least 1, got {fps}")
-        if frame_gap < 1:
-            raise ValueError(f"frame_gap must be at least 1, got {frame_gap}")
-        return self.limits.max_speed_cm_s * frame_gap / fps + self.limits.rounding_margin_cm
+        return self.limits.max_jump_cm(fps, frame_gap)
 
 
 def load_etl_config(path: Path | None = None) -> EtlConfig:

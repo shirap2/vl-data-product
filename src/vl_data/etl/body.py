@@ -2,6 +2,8 @@
 
 from vl_data.core.config import BodyConfig
 from vl_data.core.manifest import Manifest
+from vl_data.generator.models import Scenario
+from vl_data.generator.motion import frame_count
 
 
 def drive_body(manifest: Manifest, fallback: BodyConfig) -> BodyConfig:
@@ -19,3 +21,13 @@ def drive_body(manifest: Manifest, fallback: BodyConfig) -> BodyConfig:
     if n < 2 or n**3 != points:
         raise ValueError(f"points_per_frame must be a cube n**3 with n >= 2, got {points}")
     return BodyConfig.model_validate({"size_cm": fallback.size_cm, "points_per_axis": n})
+
+
+def expected_frame_count(manifest: Manifest) -> int:
+    """Frames the drive's scenario implies at the manifest fps (frames).
+
+    Never use manifest.frame_count for this: it counts the rows of the file, which a duplicate
+    or dropped frame changes. The scenario in the manifest is covered by the verified scenario
+    hash. Raises ValueError (pydantic's ValidationError is one) if the scenario does not validate.
+    """
+    return frame_count(Scenario.model_validate(manifest.scenario), manifest.fps)
