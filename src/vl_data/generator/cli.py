@@ -8,7 +8,7 @@ import yaml
 
 from vl_data.core.config import load_config
 from vl_data.core.manifest import read_manifest, verify_drive
-from vl_data.generator.drive import generate as generate_drive
+from vl_data.generator.drive import iter_frame_batches
 from vl_data.generator.inverse import (
     MIN_RELIABLE_SEGMENT_FRAMES,
     compare_scenarios,
@@ -75,9 +75,10 @@ def verify(drive_dir: Annotated[Path, typer.Argument(help="Drive folder to check
 def roundtrip(
     scenario: Annotated[Path, typer.Option("--scenario", help="Scenario YAML file.")],
 ) -> None:
-    """Generate in memory, infer the scenario back, compare to tolerances; exit 1 on failure.
+    """Generate batch by batch, infer the scenario back, compare to tolerances; exit 1 on failure.
 
-    Writes nothing to disk. Units: boundary and duration errors in frames, end speed in cm/s.
+    Writes nothing to disk and keeps one batch of frames in memory. Units: boundary and duration
+    errors in frames, end speed in cm/s.
     """
     config = load_config()
     try:
@@ -92,12 +93,11 @@ def roundtrip(
             err=True,
         )
     try:
-        drive = generate_drive(loaded, config)
-        inferred = infer_scenario(drive.frames, config)
+        inferred = infer_scenario(iter_frame_batches(loaded, config), config)
     except ValueError as exc:
         _exit_with_error(f"cannot round-trip scenario: {exc}")
-    report = compare_scenarios(drive.scenario, inferred, config.tolerances, config.fps)
-    typer.echo(f"segments: expected {len(drive.scenario.segments)}, found {len(inferred.segments)}")
+    report = compare_scenarios(loaded, inferred, config.tolerances, config.fps)
+    typer.echo(f"segments: expected {len(loaded.segments)}, found {len(inferred.segments)}")
     if not report.ok:
         for problem in report.problems:
             typer.echo(problem, err=True)

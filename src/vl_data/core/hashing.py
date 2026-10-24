@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,31 @@ def file_sha256(path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def scenario_hash(scenario: BaseModel) -> str:
-    """SHA-256 of the canonical JSON (UTF-8) of a validated scenario model."""
-    return sha256_hex(canonical_json(scenario.model_dump(mode="json")).encode("utf-8"))
+def drive_hash(scenario: dict[str, Any], body: Mapping[str, Any]) -> str:
+    """SHA-256 of the canonical JSON of {"body": {size_cm, points_per_axis}, "scenario": ...}.
+
+    scenario is the validated scenario as a JSON-ready dict; body needs size_cm (cm) and
+    points_per_axis (count); both are coerced with int(), so 100.0 and 100 agree. Extra body
+    keys are ignored. The same scenario at another density
+    gets another hash, so each density has its own drive folder.
+    """
+    payload = {
+        "body": {"size_cm": int(body["size_cm"]), "points_per_axis": int(body["points_per_axis"])},
+        "scenario": scenario,
+    }
+    return sha256_hex(canonical_json(payload).encode("utf-8"))
+
+
+def scenario_hash(scenario: BaseModel, body: Any = None) -> str:
+    """SHA-256 of a validated scenario model; with a body, the drive hash (see drive_hash).
+
+    Without body this is the SHA-256 of the canonical JSON (UTF-8) of the scenario alone.
+    body is a dict or an object with size_cm and points_per_axis (BodyConfig, BodyInfo).
+    A no-body hash is NOT a drive hash: a drive's hash always includes its body.
+    """
+    dumped = scenario.model_dump(mode="json")
+    if body is None:
+        return sha256_hex(canonical_json(dumped).encode("utf-8"))
+    if isinstance(body, Mapping):
+        return drive_hash(dumped, body)
+    return drive_hash(dumped, {"size_cm": body.size_cm, "points_per_axis": body.points_per_axis})

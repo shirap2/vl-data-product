@@ -15,6 +15,7 @@ The user wants a data generator whose input is the vehicle's start location and 
 - No data is supplied, so the source must be mocked. [assignment.pdf section 3 "Data"]
 - The agreed design (straight line along x, signed speed, `move` and `stop` segments, hashed manifest, two-way inverse) and the decisions log are in architecture_context.txt. [architecture_context.txt "DECISIONS", "MODULE 1", "DECISIONS LOG"]
 - The repo has no code yet. Only README.md is tracked. The skeleton is part of this plan (user decision).
+- Full density (user decision 2026-10-24): 100^3 = 1,000,000 points per frame, 12,000,000 bytes, placed and encoded in 0.032 s (measured, one frame); the 1,000-frame demo is about 12 GB raw before compression (calculated). The tolerances below were measured on a 10x10x10 lattice; centroid-based tracking should not depend on density, but they are re-checked at full density in the FULL-DENSITY task.
 - Measured on 2026-10-23 with a throwaway script (not in the repo) on a 1-D demo drive of 1000 frames, 10x10x10 integer lattice:
 
 | Quantity | Measured max | Worst-case bound (computed) |
@@ -57,10 +58,10 @@ The user wants a data generator whose input is the vehicle's start location and 
 
 - REQ-1: A `Scenario` model (YAML file) holds a start (x, y, z in cm and speed in cm/s, default 0), a seed, and a list of segments `move(duration_s, end_speed_cm_s)` and `stop(duration_s)`. Durations are in seconds and must be a whole number of frames. A move whose start and end speed are both 0 is rejected. [user decisions: segments, duration unit, start speed; architecture_context.txt MODULE 1]
 - REQ-2: Configuration is YAML read by a Python loader that validates it. An environment variable can override the output folder. [user request; architecture_context.txt DECISIONS]
-- REQ-3: Each frame is a 1 m cube, a 10x10x10 lattice of 1,000 points from 0 to 99 cm in fixed order, stored as int32 cm; 16 frames per second; `timestamp_ns = frame_id * 62,500,000`. [user decision: lattice; assignment.pdf 1.2]
+- REQ-3: Each frame is a 1 m cube, a 100x100x100 lattice of 1,000,000 points 1 cm apart from 0 to 99 cm in fixed order, stored as int32 cm (12,000,000 bytes per frame); 16 frames per second; `timestamp_ns = frame_id * 62,500,000`. Amended 2026-10-24: the first plan used a 10x10x10 lattice; the user chose the assignment's real density (see FULL-DENSITY decisions below). [user decision 2026-10-24; assignment.pdf 1.2]
 - REQ-4: Motion is a straight line along x with signed speed. y and z are constant. There is no rotation and no yaw. Speed changes linearly inside a `move`. The ground truth holds per-frame x, velocity and acceleration, with no event labels. [user decisions: geometry, ground truth, drop events]
 - REQ-5: A drive is written to `data/raw/<first 12 hex of scenario_hash>/` as `frames.parquet` (one row per frame, points as one binary column), `ground_truth.parquet` and `manifest.json`. [user decisions: layout, frames layout]
-- REQ-6: `scenario_hash` is the SHA-256 of the canonical JSON of the validated scenario. The manifest holds the full 64-hex hash and the SHA-256 of each file's bytes on disk. A verifier detects any changed, missing or extra file. The same scenario gives byte-identical files. [user decisions: hash, file hashes]
+- REQ-6: the drive hash (`scenario_hash` in the manifest) is the SHA-256 of the canonical JSON of `{"body": {size_cm, points_per_axis}, "scenario": <validated scenario>}` (changed 2026-10-24 by FULL-DENSITY; before it covered the scenario only). The manifest holds the full 64-hex hash and the SHA-256 of each file's bytes on disk. A verifier detects any changed, missing or extra file. The same scenario gives byte-identical files. [user decisions: hash, file hashes]
 - REQ-7: A 1 cm move on x shifts every point by exactly (1, 0, 0). [assignment.pdf 1.2]
 - REQ-8: The simulator is checked in both directions. `infer_track` recovers per-frame position and velocity from the frames. `fit_segments` recovers the typed segment list from the track. `infer(generate(s))` matches `s` within the measured tolerances, tested with hypothesis. [user decision: inverse = both; user request]
 - REQ-9: A fault-injection helper produces known faults for each ETL error code VL-001 to VL-006 and reports how many were injected per code. [architecture_context.txt MODULE 1; assignment.pdf 3.3a]
@@ -88,7 +89,7 @@ The user wants a data generator whose input is the vehicle's start location and 
 
 ## Success Criteria
 
-- A demo drive of 1000 frames at 16 fps with timestamp spacing of exactly 62,500,000 ns and 1,000 points per frame.
+- A demo drive of 1000 frames at 16 fps with timestamp spacing of exactly 62,500,000 ns and 1,000,000 points per frame (full density; tests use a small-lattice config).
 - A 1 cm x move shifts every point by exactly (1, 0, 0).
 - The same scenario run twice gives byte-identical files and the same scenario hash.
 - `verify` reports ok on a fresh drive and names the file after a byte is changed, a file is deleted, or an extra file is added.
@@ -107,7 +108,8 @@ The user wants a data generator whose input is the vehicle's start location and 
 | UI scope | Generate tab only (Recommended) | 1 |
 | New sources (pydantic, PyYAML, Typer, hypothesis, hashlib) | Approve all five | 2 |
 | Segment description | Typed segments; later replaced by "move + stop (Recommended)" | 3 |
-| Point sampling | 10x10x10 lattice | 3 |
+| Point sampling | 10x10x10 lattice; REPLACED 2026-10-24 by the full 100x100x100 density (1,000,000 points per frame), because the PDF allows fewer frames, not thinner ones | 3 |
+| Full-density details (2026-10-24) | zstd codec after a bigger test; keep the 1,000-frame demo; put body size and points_per_axis into the scenario hash (changes the demo hash, agreed with Module 2 first); recover y and z in `infer_scenario`; streaming write in batches of about 50 frames. Task file: `.claude/plans/followups/full-density.md`, run after TASK-6 and before TASK-7 | 3 |
 | Scenario hash input | Canonical JSON of the validated scenario | 3 |
 | Inverse function output | Both, in two steps (Recommended) | 3 |
 | File hash scope | The file bytes on disk (Recommended) | 3 |
@@ -131,9 +133,9 @@ The generator is a pure pipeline from a validated `Scenario` to a `Drive` (two A
 
 1. **Scenario** (REQ-1). A pydantic model validates a YAML file. Segment durations must be multiples of 1/16 s. Floats are stored as floats, so `600` and `600.0` give the same hash.
 2. **Speed per frame** (REQ-4). A segment of `n` frames that goes from speed `a` to speed `b` gives frame speeds `a + (b - a) * i / n` for `i = 0..n-1`. The next segment starts at `b`. `stop` holds 0. This is forward Euler, so position is `x[k+1] = x[k] + v[k] / 16`. The end speed `b` is reached on the first frame of the next segment (the last segment never reaches its own end speed exactly). The ground truth is defined to match what a decoder sees: `velocity[k] = (x[k+1] - x[k]) * 16` and `acceleration[k] = (v[k+1] - v[k]) * 16`, with the last frame repeating the previous value.
-3. **Points** (REQ-3, REQ-7). The lattice axis values are `rint(linspace(0, 99, 10))`, in x-major order. A frame's points are `rint(lattice + [x, y, z])` as int32. y and z are constant. The 8 cube corners are lattice points, so the ETL can pick them by index.
-4. **Files** (REQ-5, REQ-6). `frames.parquet` has one row per frame with `frame_id`, `timestamp_ns` and a binary `points` column (1000 x 3 int32, little-endian, row-major). `ground_truth.parquet` has per-frame x, velocity and acceleration. The manifest stores the schema version, scenario hash, seed, fps, frame count, points per frame, the scenario itself, and the SHA-256 and size of each file. Files are written with fixed Parquet options, so the same scenario gives the same bytes on the same pyarrow version.
-5. **Hashing** (REQ-6). `canonical_json` sorts keys, uses no spaces, and writes floats with Python's shortest round-trip form. `scenario_hash = sha256(canonical_json(scenario))`. The folder is the first 12 hex characters; the manifest keeps all 64.
+3. **Points** (REQ-3, REQ-7). The lattice axis values are `rint(linspace(0, 99, points_per_axis))`, in x-major order; the default `points_per_axis` is 100, so 1 cm spacing and 1,000,000 points (the corners are at indices 0, 99, 9,900, 9,999, 990,000, 990,099, 999,900 and 999,999; compute them from `cube_lattice`). A frame's points are `rint(lattice + [x, y, z])` as int32. y and z are constant. The 8 cube corners are lattice points, so the ETL can pick them by index.
+4. **Files** (REQ-5, REQ-6). `frames.parquet` has one row per frame with `frame_id`, `timestamp_ns` and a binary `points` column (points_per_axis^3 x 3 int32, little-endian, row-major; 12,000,000 bytes per frame at full density). One Arrow binary array holds at most 2,147,483,647 bytes (178 full frames), so frames are built and written in batches of about 50 frames with row groups of about 50 rows, streamed into `ParquetWriter` with zstd (a 2-frame test: snappy 8,048,769 bytes, zstd 549,552 bytes; to be repeated on a real drive). `ground_truth.parquet` has per-frame x, velocity and acceleration. The manifest stores the schema version, scenario hash, seed, fps, frame count, points per frame, the scenario itself, and the SHA-256 and size of each file. Files are written with fixed Parquet options, so the same scenario gives the same bytes on the same pyarrow version.
+5. **Hashing** (REQ-6). `canonical_json` sorts keys, uses no spaces, and writes floats with Python's shortest round-trip form. `drive_hash = sha256(canonical_json({"body": {...}, "scenario": {...}}))` (FULL-DENSITY; `scenario_hash(scenario)` without a body keeps the old scenario-only value). The folder is the first 12 hex characters; the manifest keeps all 64 and a nested `body` block (`size_cm`, `points_per_axis`) so `verify` can recompute the hash.
 6. **Safe writes**. A drive is written to a temporary folder next to the target and then swapped in, so a crash never leaves a half-written drive. Writing is not safe for concurrent writers (stated as a known issue).
 7. **Inverse** (REQ-8). `infer_track` takes the centroid x of each frame (mean of the points minus the lattice centre) and the forward difference of it. `fit_segments` runs an optimal-partition (dynamic programming) fit of piecewise-linear lines to the velocity series. A piece whose fitted speed stays under a stop threshold is a `stop`; any other piece is a `move` with the fitted end speed. `infer_scenario` rebuilds a `Scenario` and `compare_scenarios` reports the differences against the tolerances. This was prototyped on the demo drive and found all 7 boundaries within 4 frames.
 8. **Faults** (REQ-9). Six small fault classes (one per code) change a `Drive`'s frames table and return counts per code. The manifest is built after injection, so a faulty drive still verifies.
@@ -219,7 +221,7 @@ from pydantic import BaseModel
 
 class BodyConfig(BaseModel):
     size_cm: int = 100                 # cube edge, cm
-    points_per_axis: int = 10          # lattice points per axis
+    points_per_axis: int = 100         # lattice points per axis (full density: 100^3 = 1,000,000 points)
 
 class ToleranceConfig(BaseModel):
     position_cm: float = 0.6
@@ -280,7 +282,7 @@ import numpy as np
 import pyarrow as pa
 from numpy.typing import NDArray
 
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2  # FULL-DENSITY: the manifest gained the required body block
 FRAMES_SCHEMA: pa.Schema          # frame_id int64, timestamp_ns int64, points binary
 GROUND_TRUTH_SCHEMA: pa.Schema    # frame_id int64, timestamp_ns int64, x_cm float64,
                                   # velocity_cm_s float64, acceleration_cm_s2 float64
@@ -304,13 +306,18 @@ class FileEntry(BaseModel):
     sha256: str
     bytes: int
 
+class BodyInfo(BaseModel):  # FULL-DENSITY: bounded ints (size_cm 1..2^31-1, points_per_axis 1..1,000,000)
+    size_cm: int
+    points_per_axis: int
+
 class Manifest(BaseModel):
     schema_version: int
     scenario_hash: str
     seed: int
     fps: int
     frame_count: int
-    points_per_frame: int
+    points_per_frame: int  # must equal body.points_per_axis ** 3
+    body: BodyInfo
     scenario: dict[str, object]
     files: dict[str, FileEntry]
 
@@ -320,7 +327,7 @@ class VerifyResult:
     problems: list[str]
 
 def build_manifest(drive_dir: Path, scenario_hash: str, scenario: dict[str, object],
-                   fps: int, frame_count: int, points_per_frame: int) -> Manifest:
+                   fps: int, frame_count: int, points_per_frame: int, body: BodyInfo) -> Manifest:
     """Hash every data file in drive_dir (bytes on disk) and build the manifest."""
     raise NotImplementedError
 
@@ -638,11 +645,11 @@ def render_generate_tab(config: Config) -> None:
 | TASK-3 | tests/generator/test_models.py | test_duration_must_be_whole_frames | 1.03 s is rejected, 1.0625 s is accepted |
 | TASK-3 | tests/generator/test_models.py | test_move_with_zero_speeds_rejected | move from 0 to 0 is rejected |
 | TASK-3 | tests/generator/test_models.py | test_demo_yaml_loads | generator/scenarios/demo.yaml gives 1000 frames |
-| TASK-3 | tests/generator/test_body.py | test_lattice_shape_and_corners | 1,000 points, includes the 8 corners, x-major order |
+| TASK-3 | tests/generator/test_body.py | test_lattice_shape_and_corners | points_per_axis^3 points (1,000,000 at full density), includes the 8 corners, x-major order |
 | TASK-3 | tests/generator/test_body.py | test_one_cm_shift_is_exact | a 1 cm x move shifts every point by exactly (1,0,0) |
 | TASK-3 | tests/generator/test_motion.py | test_speed_profile_ramp | speeds follow the linear ramp and reversal passes through 0 |
 | TASK-3 | tests/generator/test_motion.py | test_ground_truth_matches_forward_difference | velocity and acceleration equal differences of x and v |
-| TASK-4 | tests/generator/test_generator.py | test_frame_timestamps_exact | 1000 frames, spacing 62,500,000 ns, 1,000 points each |
+| TASK-4 | tests/generator/test_generator.py | test_frame_timestamps_exact | 1000 frames, spacing 62,500,000 ns, points_per_axis^3 points each (small-lattice config in tests) |
 | TASK-4 | tests/generator/test_generator.py | test_same_scenario_same_bytes | two runs give identical file hashes |
 | TASK-4 | tests/generator/test_generator.py | test_folder_is_hash12 | folder name is the first 12 hex of the manifest hash |
 | TASK-4 | tests/generator/test_generator.py | test_rewrite_replaces_folder | writing twice leaves one clean folder |
@@ -694,8 +701,8 @@ python -m pytest --cov=vl_data --cov-report=term-missing --cov-fail-under=80 tes
 **Acceptance criteria for implement-loop**:
 - TASK-1: `python -m vl_data --version` prints `vl_data 0.1.0`; ruff, mypy and pytest are clean on the empty skeleton.
 - TASK-2: config loads and validates; `scenario_hash` is stable (golden hash); `verify_drive` reports changed, missing and extra files; point encoding round-trips.
-- TASK-3: the scenario model enforces whole-frame durations and rejects zero-to-zero moves; the lattice has 1,000 points including the 8 corners; a 1 cm x move shifts every point by exactly (1,0,0); ground truth equals forward differences.
-- TASK-4: the demo drive has 1000 frames, 62,500,000 ns spacing, 1,000 points per frame; two runs give identical bytes; the folder is the 12-hex prefix; `verify` catches tampering; the generator never reads the ground-truth file.
+- TASK-3: the scenario model enforces whole-frame durations and rejects zero-to-zero moves; the lattice has points_per_axis^3 points (1,000,000 at full density) including the 8 corners; a 1 cm x move shifts every point by exactly (1,0,0); ground truth equals forward differences.
+- TASK-4: the demo drive has 1000 frames, 62,500,000 ns spacing, points_per_axis^3 points per frame; two runs give identical bytes; the folder is the 12-hex prefix; `verify` catches tampering; the generator never reads the ground-truth file.
 - TASK-5: the demo round trip passes within the measured tolerances; the hypothesis property test passes in its stated domain.
 - TASK-6: each of the six faults produces the reported count; a faulty drive still verifies.
 - TASK-7: the Generate tab renders and its button writes the same drive as the CLI.
@@ -765,7 +772,7 @@ RUN_PROOF (TASK-4, Drive writer, generate and verify):
     - exit code 0
     - output contains "frames: 1000"
     - output contains "timestamp_spacing_ns: 62500000"
-    - output contains "points_per_frame: 1000"
+    - output contains "points_per_frame: 1000" (TASK-4 run proof, 10x10x10 at that time; at full density the FULL-DENSITY proof expects "points_per_frame: 1000000")
     - output contains a line "scenario_hash: " followed by 64 lowercase hex characters
     - output contains "manifest: verified"
     - the folder data/raw/<first 12 hex of that hash>/ contains frames.parquet, ground_truth.parquet and manifest.json
@@ -793,7 +800,7 @@ RUN_PROOF (TASK-6, Fault-injection helper):
   pass_criteria:
     - exit code 0
     - output contains PASSED for test_vl001_drop_frame, test_vl002_shift_timestamp, test_vl003_duplicate_frame, test_vl004_corrupt_points, test_vl005_break_schema and test_vl006_teleport
-    - output contains "test_faulty_drive_still_verifies PASSED"
+    - output contains PASSED for test_faulty_drive_still_verifies[drop], [shift], [duplicate], [corrupt], [schema] and [teleport] (amended 2026-10-24 by the user: the test is parametrised over all six faults)
   exercises: all six fault types and their counts
 
 RUN_PROOF (TASK-7, Generate tab):

@@ -4,39 +4,37 @@ from collections.abc import Callable
 
 import pytest
 
-from vl_data.core.config import BodyConfig
-from vl_data.core.manifest import Manifest, read_manifest
+from vl_data.core.manifest import BodyInfo, Manifest, read_manifest
 from vl_data.etl.body import drive_body, expected_frame_count
 from vl_data.generator.faults import DropFrame, DuplicateFrame
 
 from .helpers import Written
 
 
-def _manifest(points_per_frame: int) -> Manifest:
+def _manifest(points_per_axis: int, size_cm: int = 100) -> Manifest:
     return Manifest(
-        schema_version=1,
+        schema_version=2,
         scenario_hash="0" * 64,
         seed=0,
         fps=16,
         frame_count=1,
-        points_per_frame=points_per_frame,
+        points_per_frame=points_per_axis**3,
+        body=BodyInfo(size_cm=size_cm, points_per_axis=points_per_axis),
         scenario={},
         files={},
     )
 
 
-def test_body_from_points_per_frame() -> None:
-    fallback = BodyConfig(size_cm=150, points_per_axis=10)
-    for points, axis in ((1_000, 10), (1_000_000, 100), (8, 2)):
-        body = drive_body(_manifest(points), fallback)
-        assert body.points_per_axis == axis
-        assert body.size_cm == 150
+@pytest.mark.parametrize("axis", [2, 10, 100])
+def test_body_from_manifest(axis: int) -> None:
+    body = drive_body(_manifest(axis, size_cm=150))
+    assert body.points_per_axis == axis
+    assert body.size_cm == 150
 
 
-@pytest.mark.parametrize("points", [999, 1001, 0, 1, -8, 10**400])
-def test_body_rejects_non_cube(points: int) -> None:
+def test_body_rejects_single_point_lattice() -> None:
     with pytest.raises(ValueError):
-        drive_body(_manifest(points), BodyConfig())
+        drive_body(_manifest(1))
 
 
 def test_expected_frame_count_ignores_row_count(write_faulty: Callable[..., Written]) -> None:
@@ -52,4 +50,4 @@ def test_expected_frame_count_ignores_row_count(write_faulty: Callable[..., Writ
 
 def test_expected_frame_count_bad_scenario_raises() -> None:
     with pytest.raises(ValueError):
-        expected_frame_count(_manifest(8))  # scenario={} does not validate
+        expected_frame_count(_manifest(2))  # scenario={} does not validate

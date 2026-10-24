@@ -32,7 +32,7 @@ def _check_defaults(cfg: EtlConfig) -> None:
     assert cfg.limits.max_speed_cm_s == 9000.0
     assert cfg.limits.rounding_margin_cm == 2.0
     assert cfg.chunk_mib == 128
-    assert cfg.supported_schema_versions == [1]
+    assert cfg.supported_schema_versions == [2]
     assert cfg.lake_dir == Path("warehouse")
     for spec, (name, bits) in zip(cfg.keypoints[:8], CORNERS.items(), strict=True):
         assert (spec.name, spec.kind, spec.bits, spec.index) == (name, "corner", bits, None)

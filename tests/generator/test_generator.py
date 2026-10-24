@@ -46,9 +46,9 @@ sys.addaudithook(_gt_audit_hook)
 
 
 @pytest.fixture(scope="module")
-def config() -> Config:
-    """Default config (16 fps, 100 cm cube, 10 points per axis)."""
-    return Config()
+def config(small_config: Config) -> Config:
+    """Small-lattice config (16 fps, 100 cm cube, 10 points per axis)."""
+    return small_config
 
 
 @pytest.fixture(scope="module")
@@ -67,7 +67,7 @@ def _hashes(folder: Path) -> dict[str, str]:
     return {p.name: file_sha256(p) for p in sorted(folder.iterdir())}
 
 
-def test_frame_timestamps_exact(drive: Drive, scenario: Scenario) -> None:
+def test_frame_timestamps_exact(drive: Drive, scenario: Scenario, config: Config) -> None:
     """1000 frames, spacing 62,500,000 ns, 1,000 points each."""
     frames = drive.frames
     assert frames.num_rows == 1000
@@ -77,7 +77,7 @@ def test_frame_timestamps_exact(drive: Drive, scenario: Scenario) -> None:
     assert {len(p) for p in frames.column("points").to_pylist()} == {1000 * 12}
     assert drive.ground_truth.num_rows == 1000
     assert drive.ground_truth.column("timestamp_ns").to_pylist() == ts
-    assert drive.scenario_hash == scenario_hash(scenario)
+    assert drive.scenario_hash == scenario_hash(scenario, config.body)
 
 
 def test_tables_use_shared_schemas(drive: Drive) -> None:
@@ -241,3 +241,15 @@ def test_target_that_is_a_file_is_rejected(drive: Drive, config: Config, tmp_pat
     with pytest.raises(NotADirectoryError, match="not a folder"):
         write_drive(drive, tmp_path, config)
     assert [p.name for p in tmp_path.iterdir()] == [drive_dir_name(drive.scenario_hash)]
+
+
+def test_write_drive_rejects_a_config_with_another_body(
+    drive: Drive, config: Config, tmp_path: Path
+) -> None:
+    """A drive made at one density cannot be written under a config of another density."""
+    other = config.model_copy(
+        update={"body": config.body.model_copy(update={"points_per_axis": 5})}
+    )
+    with pytest.raises(ValueError, match="different body"):
+        write_drive(drive, tmp_path, other)
+    assert list(tmp_path.iterdir()) == []

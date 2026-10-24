@@ -6,7 +6,15 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from vl_data.core.hashing import canonical_json, file_sha256, scenario_hash, sha256_hex
+from vl_data.core.config import BodyConfig
+from vl_data.core.hashing import (
+    canonical_json,
+    drive_hash,
+    file_sha256,
+    scenario_hash,
+    sha256_hex,
+)
+from vl_data.generator.drive import drive_dir_name
 
 
 class _Seg(BaseModel):
@@ -91,3 +99,43 @@ def test_file_sha256_matches_hashlib(tmp_path: Path) -> None:
     path = tmp_path / "f.bin"
     path.write_bytes(data)
     assert file_sha256(path) == hashlib.sha256(data).hexdigest()
+
+
+# With a body the hash covers {"body": ..., "scenario": ...}; the string is written by hand.
+GOLDEN_BODY_JSON = '{"body":{"points_per_axis":100,"size_cm":100},"scenario":' + GOLDEN_JSON + "}"
+GOLDEN_BODY_SHA256 = "e8f216e4a0a12afb5eea257f10ab78067e7325e6cbef829651f4052d926697b3"
+
+
+def test_scenario_hash_with_body_golden() -> None:
+    body = BodyConfig(size_cm=100, points_per_axis=100)
+    assert scenario_hash(_model(), body) == GOLDEN_BODY_SHA256
+    assert hashlib.sha256(GOLDEN_BODY_JSON.encode("utf-8")).hexdigest() == GOLDEN_BODY_SHA256
+    # a plain dict body gives the same hash
+    assert scenario_hash(_model(), {"size_cm": 100, "points_per_axis": 100}) == GOLDEN_BODY_SHA256
+
+
+def test_drive_hash_from_plain_dicts_matches_scenario_hash() -> None:
+    body = {"size_cm": 100, "points_per_axis": 100}
+    assert drive_hash(_model().model_dump(mode="json"), body) == GOLDEN_BODY_SHA256
+
+
+def test_scenario_hash_without_body_is_unchanged() -> None:
+    assert scenario_hash(_model(), None) == GOLDEN_SHA256
+
+
+def test_density_changes_hash_and_folder() -> None:
+    small = scenario_hash(_model(), BodyConfig(size_cm=100, points_per_axis=10))
+    full = scenario_hash(_model(), BodyConfig(size_cm=100, points_per_axis=100))
+    assert small != full
+    assert small[:12] != full[:12]
+    assert drive_dir_name(small) != drive_dir_name(full)
+    # the size also counts
+    assert scenario_hash(_model(), BodyConfig(size_cm=200, points_per_axis=10)) != small
+
+
+def test_drive_hash_coerces_integral_floats_in_the_body() -> None:
+    """100.0 and 100 give the same drive hash (body values are int-coerced)."""
+    scenario = _model().model_dump(mode="json")
+    as_float = drive_hash(scenario, {"size_cm": 100.0, "points_per_axis": 100.0})
+    assert as_float == drive_hash(scenario, {"size_cm": 100, "points_per_axis": 100})
+    assert as_float == GOLDEN_BODY_SHA256

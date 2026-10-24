@@ -81,7 +81,7 @@ class EtlConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     supported_schema_versions: list[StrictInt] = Field(
-        default=[1], min_length=1, max_length=16
+        default=[2], min_length=1, max_length=16
     )  # raw schema versions the loader accepts
     # MiB of raw int32 xyz data per chunk; peak memory is about 2-3x this (payload + decoded copy)
     chunk_mib: int = Field(default=128, ge=1, le=1024)

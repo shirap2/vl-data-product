@@ -22,7 +22,7 @@ class BodyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     size_cm: int = Field(default=100, gt=0)  # cube edge, cm
-    points_per_axis: int = Field(default=10, ge=2)  # lattice points per axis
+    points_per_axis: int = Field(default=100, ge=2)  # lattice points per axis
 
 
 class ToleranceConfig(BaseModel):

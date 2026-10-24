@@ -3,7 +3,7 @@ fps: 16
 raw_dir: data/raw
 body:
   size_cm: 100
-  points_per_axis: 10
+  points_per_axis: 100
 tolerances:
   position_cm: 0.6
   velocity_cm_s: 17.0

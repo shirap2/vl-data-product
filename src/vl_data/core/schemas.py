@@ -6,7 +6,7 @@ import numpy as np
 import pyarrow as pa
 from numpy.typing import NDArray
 
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 
 # One row per frame; points is the encode_points bytes of that frame.
 FRAMES_SCHEMA: pa.Schema = pa.schema(

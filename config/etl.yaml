@@ -1,5 +1,5 @@
 # ETL (loader) configuration. Lengths in cm, speeds in cm/s.
-supported_schema_versions: [1]  # raw schema versions the loader accepts
+supported_schema_versions: [2]  # raw schema versions the loader accepts
 chunk_mib: 128  # MiB of raw int32 xyz point data per chunk (12 bytes per point)
 lake_dir: warehouse  # lake root; VL_LAKE_DIR overrides
 
