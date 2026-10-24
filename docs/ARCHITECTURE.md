@@ -206,6 +206,9 @@ gave an end-speed error of 42.4 cm/s, 24-frame segments 0 -> -460 -> 490 -> 0 ga
 (limit 40), and 0 -> 100 -> 110 cm/s at 16 frames each (slope change 90 cm/s^2) was fitted as one
 piece, so shorter segments are not covered. A 3,000-example stress run was reported but is not
 logged; only the committed 40-example derandomized test is evidence.
+Decision (2026-10-24, user): keep this 32-frame domain (ASSUMPTIONS A14). `roundtrip` therefore
+prints a `warning:` line on stderr for every segment under 32 frames
+(`MIN_RELIABLE_SEGMENT_FRAMES`).
 
 ## Error handling
 

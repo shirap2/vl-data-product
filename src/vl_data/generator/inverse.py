@@ -12,6 +12,9 @@ from vl_data.generator.body import cube_lattice
 from vl_data.generator.models import MoveSegment, Scenario, Segment, StopSegment
 
 _DECIMALS = 2  # speeds are rounded to 0.01 cm/s so that "exactly 0" is well defined
+# Shortest segment, in frames (2 s at 16 frames/s), that the round trip is tested for (A14).
+# Shorter segments can merge into one fitted piece or give an end speed beyond tolerance.
+MIN_RELIABLE_SEGMENT_FRAMES = 32
 
 
 @dataclass(frozen=True)
@@ -224,6 +227,18 @@ def infer_scenario(frames: pa.Table, config: Config) -> Scenario:
 def _frames(scenario: Scenario, fps: int) -> list[int]:
     """Whole-frame duration of each segment (frames); fps in frames/s."""
     return [round(seg.duration_s * fps) for seg in scenario.segments]
+
+
+def short_segments(scenario: Scenario, fps: int) -> list[tuple[int, int]]:
+    """List (segment index, frames) for segments under MIN_RELIABLE_SEGMENT_FRAMES frames.
+
+    fps is in frames/s. The inverse is not guaranteed for these segments (ASSUMPTIONS A14).
+    """
+    return [
+        (index, frames)
+        for index, frames in enumerate(_frames(scenario, fps))
+        if frames < MIN_RELIABLE_SEGMENT_FRAMES
+    ]
 
 
 def compare_scenarios(

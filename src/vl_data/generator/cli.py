@@ -9,7 +9,12 @@ import yaml
 from vl_data.core.config import load_config
 from vl_data.core.manifest import read_manifest, verify_drive
 from vl_data.generator.drive import generate as generate_drive
-from vl_data.generator.inverse import compare_scenarios, infer_scenario
+from vl_data.generator.inverse import (
+    MIN_RELIABLE_SEGMENT_FRAMES,
+    compare_scenarios,
+    infer_scenario,
+    short_segments,
+)
 from vl_data.generator.models import load_scenario
 from vl_data.generator.writer import generate_to_disk
 
@@ -79,6 +84,13 @@ def roundtrip(
         loaded = load_scenario(scenario)
     except (OSError, ValueError, yaml.YAMLError) as exc:
         _exit_with_error(f"cannot load scenario {scenario}: {exc}")
+    for index, frames in short_segments(loaded, config.fps):
+        typer.echo(
+            f"warning: segment {index} is {frames} frames; the round trip is only tested for "
+            f"segments of {MIN_RELIABLE_SEGMENT_FRAMES} frames or more, so a result for this "
+            "segment is outside the tested range (ASSUMPTIONS A14)",
+            err=True,
+        )
     try:
         drive = generate_drive(loaded, config)
         inferred = infer_scenario(drive.frames, config)

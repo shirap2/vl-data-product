@@ -97,6 +97,10 @@ check fails, the segment line and one line per problem are printed (problems on 
 exit code is 1. A missing or invalid scenario file gives a one-line `error: ...` message and
 exit code 1.
 
+The check is only tested for segments of 32 frames (2 s) or more (A14). For every segment under
+32 frames the command prints one line such as `warning: segment 1 is 16 frames; ...` on stderr
+before the result. The demo prints no warning, because its shortest segment is exactly 32 frames.
+
 A scenario file looks like this:
 
 ```yaml
@@ -126,6 +130,8 @@ Query and dashboard examples will be added when Modules 3 and 4 exist.
 - Plain Parquet has no atomic multi-file commit, no schema-evolution tracking and no time travel.
   Writing a drive is not safe for concurrent writers.
 - Test tolerances come from one demo drive.
+- The two-way check (`roundtrip`) is only tested for segments of 32 frames (2 s) or more. Shorter
+  segments can merge into one fitted piece or miss the end-speed limit; the command warns.
 - Single machine, CPU only.
 
 ## Coming soon

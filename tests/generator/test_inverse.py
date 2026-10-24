@@ -16,11 +16,13 @@ from vl_data.core.config import Config, load_config
 from vl_data.core.schemas import FRAMES_SCHEMA, encode_points
 from vl_data.generator.drive import Drive, generate
 from vl_data.generator.inverse import (
+    MIN_RELIABLE_SEGMENT_FRAMES,
     Track,
     compare_scenarios,
     fit_segments,
     infer_scenario,
     infer_track,
+    short_segments,
 )
 from vl_data.generator.models import MoveSegment, Scenario, StopSegment, load_scenario
 
@@ -318,7 +320,7 @@ def _scenarios(draw: st.DrawFn) -> Scenario:
     prev_slope = 0.0  # cm/s^2
     total = 0  # frames
     for _ in range(draw(st.integers(min_value=1, max_value=7))):
-        frames = draw(st.integers(min_value=32, max_value=160))
+        frames = draw(st.integers(min_value=MIN_RELIABLE_SEGMENT_FRAMES, max_value=160))
         end_choice = draw(st.integers(min_value=-60, max_value=60)) * 10.0  # cm/s
         make_stop = draw(st.booleans())
         if total + frames > 1600:
@@ -361,3 +363,14 @@ def test_roundtrip_property(scenario: Scenario) -> None:
     inferred = infer_scenario(drive.frames, config)
     report = compare_scenarios(scenario, inferred, config.tolerances, config.fps)
     assert report.ok, f"{report.problems}; inferred={inferred.model_dump()}"
+
+
+def test_short_segments_lists_segments_under_32_frames() -> None:
+    """Segments under 32 frames (2 s) are listed as (index, frames); 32 frames is not short."""
+    scenario = _scenario(0.0, [_stop(32), _move(16, 100.0), _move(31, 0.0), _stop(32)])
+    assert short_segments(scenario, 16) == [(1, 16), (2, 31)]
+
+
+def test_short_segments_demo_has_none() -> None:
+    """The demo's shortest segment is exactly 32 frames, so nothing is listed."""
+    assert short_segments(load_scenario(DEMO), 16) == []
