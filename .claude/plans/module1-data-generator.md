@@ -61,7 +61,7 @@ The user wants a data generator whose input is the vehicle's start location and 
 - REQ-3: Each frame is a 1 m cube, a 100x100x100 lattice of 1,000,000 points 1 cm apart from 0 to 99 cm in fixed order, stored as int32 cm (12,000,000 bytes per frame); 16 frames per second; `timestamp_ns = frame_id * 62,500,000`. Amended 2026-10-24: the first plan used a 10x10x10 lattice; the user chose the assignment's real density (see FULL-DENSITY decisions below). [user decision 2026-10-24; assignment.pdf 1.2]
 - REQ-4: Motion is a straight line along x with signed speed. y and z are constant. There is no rotation and no yaw. Speed changes linearly inside a `move`. The ground truth holds per-frame x, velocity and acceleration, with no event labels. [user decisions: geometry, ground truth, drop events]
 - REQ-5: A drive is written to `data/raw/<first 12 hex of scenario_hash>/` as `frames.parquet` (one row per frame, points as one binary column), `ground_truth.parquet` and `manifest.json`. [user decisions: layout, frames layout]
-- REQ-6: `scenario_hash` is the SHA-256 of the canonical JSON of the validated scenario. The manifest holds the full 64-hex hash and the SHA-256 of each file's bytes on disk. A verifier detects any changed, missing or extra file. The same scenario gives byte-identical files. [user decisions: hash, file hashes]
+- REQ-6: the drive hash (`scenario_hash` in the manifest) is the SHA-256 of the canonical JSON of `{"body": {size_cm, points_per_axis}, "scenario": <validated scenario>}` (changed 2026-10-24 by FULL-DENSITY; before it covered the scenario only). The manifest holds the full 64-hex hash and the SHA-256 of each file's bytes on disk. A verifier detects any changed, missing or extra file. The same scenario gives byte-identical files. [user decisions: hash, file hashes]
 - REQ-7: A 1 cm move on x shifts every point by exactly (1, 0, 0). [assignment.pdf 1.2]
 - REQ-8: The simulator is checked in both directions. `infer_track` recovers per-frame position and velocity from the frames. `fit_segments` recovers the typed segment list from the track. `infer(generate(s))` matches `s` within the measured tolerances, tested with hypothesis. [user decision: inverse = both; user request]
 - REQ-9: A fault-injection helper produces known faults for each ETL error code VL-001 to VL-006 and reports how many were injected per code. [architecture_context.txt MODULE 1; assignment.pdf 3.3a]
@@ -135,7 +135,7 @@ The generator is a pure pipeline from a validated `Scenario` to a `Drive` (two A
 2. **Speed per frame** (REQ-4). A segment of `n` frames that goes from speed `a` to speed `b` gives frame speeds `a + (b - a) * i / n` for `i = 0..n-1`. The next segment starts at `b`. `stop` holds 0. This is forward Euler, so position is `x[k+1] = x[k] + v[k] / 16`. The end speed `b` is reached on the first frame of the next segment (the last segment never reaches its own end speed exactly). The ground truth is defined to match what a decoder sees: `velocity[k] = (x[k+1] - x[k]) * 16` and `acceleration[k] = (v[k+1] - v[k]) * 16`, with the last frame repeating the previous value.
 3. **Points** (REQ-3, REQ-7). The lattice axis values are `rint(linspace(0, 99, points_per_axis))`, in x-major order; the default `points_per_axis` is 100, so 1 cm spacing and 1,000,000 points (the corners are at indices 0, 99, 9,900, 9,999, 990,000, 990,099, 999,900 and 999,999; compute them from `cube_lattice`). A frame's points are `rint(lattice + [x, y, z])` as int32. y and z are constant. The 8 cube corners are lattice points, so the ETL can pick them by index.
 4. **Files** (REQ-5, REQ-6). `frames.parquet` has one row per frame with `frame_id`, `timestamp_ns` and a binary `points` column (points_per_axis^3 x 3 int32, little-endian, row-major; 12,000,000 bytes per frame at full density). One Arrow binary array holds at most 2,147,483,647 bytes (178 full frames), so frames are built and written in batches of about 50 frames with row groups of about 50 rows, streamed into `ParquetWriter` with zstd (a 2-frame test: snappy 8,048,769 bytes, zstd 549,552 bytes; to be repeated on a real drive). `ground_truth.parquet` has per-frame x, velocity and acceleration. The manifest stores the schema version, scenario hash, seed, fps, frame count, points per frame, the scenario itself, and the SHA-256 and size of each file. Files are written with fixed Parquet options, so the same scenario gives the same bytes on the same pyarrow version.
-5. **Hashing** (REQ-6). `canonical_json` sorts keys, uses no spaces, and writes floats with Python's shortest round-trip form. `scenario_hash = sha256(canonical_json(scenario))`. The folder is the first 12 hex characters; the manifest keeps all 64.
+5. **Hashing** (REQ-6). `canonical_json` sorts keys, uses no spaces, and writes floats with Python's shortest round-trip form. `drive_hash = sha256(canonical_json({"body": {...}, "scenario": {...}}))` (FULL-DENSITY; `scenario_hash(scenario)` without a body keeps the old scenario-only value). The folder is the first 12 hex characters; the manifest keeps all 64 and a nested `body` block (`size_cm`, `points_per_axis`) so `verify` can recompute the hash.
 6. **Safe writes**. A drive is written to a temporary folder next to the target and then swapped in, so a crash never leaves a half-written drive. Writing is not safe for concurrent writers (stated as a known issue).
 7. **Inverse** (REQ-8). `infer_track` takes the centroid x of each frame (mean of the points minus the lattice centre) and the forward difference of it. `fit_segments` runs an optimal-partition (dynamic programming) fit of piecewise-linear lines to the velocity series. A piece whose fitted speed stays under a stop threshold is a `stop`; any other piece is a `move` with the fitted end speed. `infer_scenario` rebuilds a `Scenario` and `compare_scenarios` reports the differences against the tolerances. This was prototyped on the demo drive and found all 7 boundaries within 4 frames.
 8. **Faults** (REQ-9). Six small fault classes (one per code) change a `Drive`'s frames table and return counts per code. The manifest is built after injection, so a faulty drive still verifies.
@@ -282,7 +282,7 @@ import numpy as np
 import pyarrow as pa
 from numpy.typing import NDArray
 
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2  # FULL-DENSITY: the manifest gained the required body block
 FRAMES_SCHEMA: pa.Schema          # frame_id int64, timestamp_ns int64, points binary
 GROUND_TRUTH_SCHEMA: pa.Schema    # frame_id int64, timestamp_ns int64, x_cm float64,
                                   # velocity_cm_s float64, acceleration_cm_s2 float64
@@ -306,13 +306,18 @@ class FileEntry(BaseModel):
     sha256: str
     bytes: int
 
+class BodyInfo(BaseModel):  # FULL-DENSITY: bounded ints (size_cm 1..2^31-1, points_per_axis 1..1,000,000)
+    size_cm: int
+    points_per_axis: int
+
 class Manifest(BaseModel):
     schema_version: int
     scenario_hash: str
     seed: int
     fps: int
     frame_count: int
-    points_per_frame: int
+    points_per_frame: int  # must equal body.points_per_axis ** 3
+    body: BodyInfo
     scenario: dict[str, object]
     files: dict[str, FileEntry]
 
@@ -322,7 +327,7 @@ class VerifyResult:
     problems: list[str]
 
 def build_manifest(drive_dir: Path, scenario_hash: str, scenario: dict[str, object],
-                   fps: int, frame_count: int, points_per_frame: int) -> Manifest:
+                   fps: int, frame_count: int, points_per_frame: int, body: BodyInfo) -> Manifest:
     """Hash every data file in drive_dir (bytes on disk) and build the manifest."""
     raise NotImplementedError
 

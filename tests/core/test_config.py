@@ -26,7 +26,7 @@ def test_defaults_load() -> None:
     assert config.frame_interval_ns == 62_500_000
     assert config.raw_dir == Path("data/raw")
     assert config.body.size_cm == 100
-    assert config.body.points_per_axis == 10
+    assert config.body.points_per_axis == 100
     assert config.tolerances.velocity_cm_s == 17.0
     assert config.fit.penalty == 40.0
     # The shipped default.yaml and the model defaults must agree.

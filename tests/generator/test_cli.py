@@ -7,8 +7,18 @@ import pytest
 from typer.testing import CliRunner
 
 from vl_data.cli import app
+from vl_data.core.config import Config, load_config
 
 DEMO = Path(__file__).resolve().parents[2] / "src/vl_data/generator/scenarios/demo.yaml"
+
+
+@pytest.fixture(autouse=True)
+def _small_lattice(monkeypatch: pytest.MonkeyPatch, small_config: Config) -> None:
+    """Run the commands with the 10-per-axis lattice so the tests stay fast."""
+    monkeypatch.setattr(
+        "vl_data.generator.cli.load_config",
+        lambda: load_config().model_copy(update={"body": small_config.body}),  # keeps VL_RAW_DIR
+    )
 
 
 def test_generate_prints_summary(runner: CliRunner, tmp_path: Path) -> None:

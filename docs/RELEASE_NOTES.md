@@ -50,21 +50,21 @@ It prints:
 ```text
 frames: 1000
 timestamp_spacing_ns: 62500000
-points_per_frame: 1000
-scenario_hash: c8f597af59a680681e1c36d760a325a699f20fed9e2a653de78a3b80d5bca5db
-drive_dir: data\raw\c8f597af59a6
+points_per_frame: 1000000
+scenario_hash: bf394b9bfb421fda860ab97fbab54d5c36c995a661e770969cbffd9a2afa95c1
+drive_dir: data\raw\bf394b9bfb42
 manifest: verified
 ```
 
-The folder `data/raw/c8f597af59a6/` then holds `frames.parquet` (3,196,692 bytes),
-`ground_truth.parquet` (18,133 bytes) and `manifest.json` (1,385 bytes). `--out` is optional; without
+The folder `data/raw/bf394b9bfb42/` then holds `frames.parquet` (287,134,433 bytes, zstd),
+`ground_truth.parquet` (30,929 bytes) and `manifest.json` (1,454 bytes). The run (2026-10-24, Python 3.12.6, pyarrow 26.0.0, numpy 2.5.4) took 81 s including verification; the 1,000-frame drive holds 12 GB of points before compression. `--out` is optional; without
 it the drive goes to `raw_dir` from `config/default.yaml` (or `VL_RAW_DIR`). Generating the same
 scenario again replaces the folder with identical files.
 
 Check a drive against its manifest:
 
 ```powershell
-python -m vl_data verify data/raw/c8f597af59a6
+python -m vl_data verify data/raw/bf394b9bfb42
 ```
 
 This prints `manifest: verified` and exits with code 0. After one byte of `ground_truth.parquet`
@@ -122,7 +122,7 @@ Query and dashboard examples will be added when Modules 3 and 4 exist.
 ## Known issues
 
 - No rotation. The vehicle never turns or yaws. A real vehicle rotates.
-- The point cloud is a 1,000-point sample, not the full 1,000,000 points.
+- A drive at full density is large: 12 GB of points per 1,000 frames before compression (about 287 MB on disk with zstd), and generating or checking it takes more than a minute. `generate()` and `write_drive` hold a whole drive in memory; use the `generate` command (it streams).
 - Motion is one-dimensional (along x).
 - Values are rounded to whole centimetres, which adds small errors. Per-frame acceleration is too
   noisy to use directly, so it is fitted over windows.

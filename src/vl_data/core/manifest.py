@@ -4,9 +4,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
-from vl_data.core.hashing import canonical_json, file_sha256, sha256_hex
+from vl_data.core.hashing import drive_hash, file_sha256
 from vl_data.core.schemas import SCHEMA_VERSION
 
 MANIFEST_NAME = "manifest.json"
@@ -19,8 +19,16 @@ class FileEntry(BaseModel):
     bytes: int
 
 
+class BodyInfo(BaseModel):
+    """The simulated body of a drive: cube edge (size_cm, cm, 1 to 2**31 - 1) and lattice
+    points per axis (count, 1 to 1,000,000); out-of-range values are rejected."""
+
+    size_cm: int = Field(gt=0, le=2_147_483_647)  # cube edge, cm (int32 range)
+    points_per_axis: int = Field(gt=0, le=1_000_000)  # lattice points per axis (count)
+
+
 class Manifest(BaseModel):
-    """What a drive folder must contain, and the scenario that made it."""
+    """What a drive folder must contain, and the scenario that made it (schema version 2)."""
 
     schema_version: int
     scenario_hash: str
@@ -28,8 +36,24 @@ class Manifest(BaseModel):
     fps: int
     frame_count: int
     points_per_frame: int
+    body: BodyInfo
     scenario: dict[str, object]
     files: dict[str, FileEntry]
+
+    @model_validator(mode="after")
+    def _points_match_body(self) -> "Manifest":
+        """points_per_frame (points) must equal points_per_axis (count) cubed.
+
+        BodyInfo bounds points_per_axis (field validation runs first), so the cube is never
+        computed on a huge or non-positive value.
+        """
+        expected = self.body.points_per_axis**3
+        if self.points_per_frame != expected:
+            raise ValueError(
+                f"points_per_frame {self.points_per_frame} != body.points_per_axis cubed "
+                f"({expected})"
+            )
+        return self
 
 
 @dataclass(frozen=True)
@@ -47,12 +71,14 @@ def build_manifest(
     fps: int,
     frame_count: int,
     points_per_frame: int,
+    body: BodyInfo,
 ) -> Manifest:
     """Hash every data file in drive_dir (bytes on disk) and build the manifest.
 
     Files are keyed by name, sorted; manifest.json itself is skipped. A subdirectory
-    raises ValueError. fps is in frames/s; sizes are in bytes. A folder that cannot be listed
-    or read raises OSError.
+    raises ValueError. fps is in frames/s; body is the cube edge (cm) and lattice; sizes are in
+    bytes. A folder that cannot be listed or read raises OSError. points_per_frame must equal
+    body.points_per_axis cubed (pydantic ValidationError, a ValueError, otherwise).
     """
     files: dict[str, FileEntry] = {}
     for path in sorted(drive_dir.iterdir(), key=lambda p: p.name):
@@ -71,6 +97,7 @@ def build_manifest(
         fps=fps,
         frame_count=frame_count,
         points_per_frame=points_per_frame,
+        body=body,
         scenario=scenario,
         files=files,
     )
@@ -141,7 +168,7 @@ def verify_drive(drive_dir: Path) -> VerifyResult:
     present = sorted(p.name for p in drive_dir.iterdir() if p.name != MANIFEST_NAME)
     problems.extend(f"extra: {name}" for name in present if name not in manifest.files)
     try:
-        expected = sha256_hex(canonical_json(manifest.scenario).encode("utf-8"))
+        expected = drive_hash(manifest.scenario, manifest.body.model_dump())
         matches = expected == manifest.scenario_hash
     except (ValueError, TypeError, RecursionError):
         matches = False

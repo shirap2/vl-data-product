@@ -12,7 +12,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from vl_data.core.config import Config, load_config
+from vl_data.core.config import Config
 from vl_data.core.schemas import FRAMES_SCHEMA, encode_points
 from vl_data.generator.drive import Drive, generate
 from vl_data.generator.inverse import (
@@ -31,8 +31,8 @@ DEMO_BOUNDARIES = [32, 128, 288, 352, 480, 576, 656]  # frames, true segment sta
 
 
 @pytest.fixture(scope="module")
-def config() -> Config:
-    return load_config()
+def config(small_config: Config) -> Config:
+    return small_config
 
 
 @pytest.fixture(scope="module")
@@ -60,7 +60,8 @@ def _stop(frames: int) -> dict[str, Any]:
 
 def _track(velocity: list[float]) -> Track:
     v = np.asarray(velocity, dtype=np.float64)
-    return Track(x_cm=np.zeros(len(v) + 1), velocity_cm_s=v)
+    n = len(v) + 1
+    return Track(x_cm=np.zeros(n), velocity_cm_s=v, y_cm=np.zeros(n), z_cm=np.zeros(n))
 
 
 def _starts(scenario: Scenario, fps: int = 16) -> list[int]:
@@ -356,9 +357,9 @@ def _scenarios(draw: st.DrawFn) -> Scenario:
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
 )
 @given(scenario=_scenarios())
-def test_roundtrip_property(scenario: Scenario) -> None:
+def test_roundtrip_property(scenario: Scenario, small_config: Config) -> None:
     """Hypothesis scenarios round-trip within tolerance."""
-    config = load_config()
+    config = small_config
     drive = generate(scenario, config)
     inferred = infer_scenario(drive.frames, config)
     report = compare_scenarios(scenario, inferred, config.tolerances, config.fps)
@@ -374,3 +375,119 @@ def test_short_segments_lists_segments_under_32_frames() -> None:
 def test_short_segments_demo_has_none() -> None:
     """The demo's shortest segment is exactly 32 frames, so nothing is listed."""
     assert short_segments(load_scenario(DEMO), 16) == []
+
+
+# ------------------------------------------------- y and z, and checks on the points column
+
+
+def _one_frame_table(points: Any) -> pa.Table:
+    return pa.table(
+        {"frame_id": [0], "timestamp_ns": [0], "points": pa.array([points], type=pa.binary())},
+        schema=FRAMES_SCHEMA,
+    )
+
+
+def test_infer_track_recovers_y_and_z(config: Config) -> None:
+    scenario = Scenario.model_validate(
+        {
+            "start": {"x_cm": 30.0, "y_cm": -70.0, "z_cm": 125.0},
+            "segments": [{"type": "stop", "duration_s": 1.0}],
+        }
+    )
+    track = infer_track(generate(scenario, config).frames, config)
+    assert np.allclose(track.x_cm, 30.0)
+    assert np.allclose(track.y_cm, -70.0)
+    assert np.allclose(track.z_cm, 125.0)
+
+
+def test_infer_track_accepts_record_batches(demo_drive: Drive, config: Config) -> None:
+    from_table = infer_track(demo_drive.frames, config)
+    from_batches = infer_track(iter(demo_drive.frames.to_batches()), config)
+    assert np.array_equal(from_table.x_cm, from_batches.x_cm)
+    assert np.array_equal(from_table.y_cm, from_batches.y_cm)
+
+
+def test_infer_track_missing_points_column_raises_value_error(config: Config) -> None:
+    table = pa.table({"frame_id": [0], "timestamp_ns": [0]})
+    with pytest.raises(ValueError, match="points"):
+        infer_track(table, config)
+    with pytest.raises(ValueError, match="points"):
+        infer_track(iter(table.to_batches()), config)
+
+
+def test_infer_track_null_points_raises_value_error(config: Config) -> None:
+    with pytest.raises(ValueError, match="null"):
+        infer_track(_one_frame_table(None), config)
+
+
+def test_infer_track_wrong_point_count_raises_value_error(config: Config) -> None:
+    too_few = encode_points(np.zeros((999, 3), dtype=np.int32))
+    with pytest.raises(ValueError, match="11988 bytes"):
+        infer_track(_one_frame_table(too_few), config)
+    ragged = b"\x00" * 13
+    with pytest.raises(ValueError, match="points"):
+        infer_track(_one_frame_table(ragged), config)
+
+
+@settings(max_examples=25, deadline=None, derandomize=True)
+@given(
+    x=st.integers(-2000, 2000),
+    y=st.integers(-2000, 2000),
+    z=st.integers(-2000, 2000),
+)
+def test_infer_scenario_recovers_start_position(
+    x: int, y: int, z: int, small_config: Config
+) -> None:
+    """The rebuilt start x, y and z equal the original for whole-cm starts."""
+    scenario = Scenario.model_validate(
+        {
+            "start": {"x_cm": float(x), "y_cm": float(y), "z_cm": float(z)},
+            "segments": [{"type": "stop", "duration_s": 1.0}],
+        }
+    )
+    inferred = infer_scenario(generate(scenario, small_config).frames, small_config)
+    assert (inferred.start.x_cm, inferred.start.y_cm, inferred.start.z_cm) == (x, y, z)
+    assert inferred.start == scenario.start.model_copy(update={"speed_cm_s": 0.0})
+
+
+def test_infer_track_on_a_sliced_table_equals_the_full_result(
+    demo_drive: Drive, config: Config
+) -> None:
+    full = infer_track(demo_drive.frames, config)
+    part = infer_track(demo_drive.frames.slice(3, 40), config)
+    assert np.array_equal(part.x_cm, full.x_cm[3:43])
+    assert np.array_equal(part.y_cm, full.y_cm[3:43])
+    assert np.array_equal(part.z_cm, full.z_cm[3:43])
+
+
+def test_infer_track_on_unevenly_chunked_table_equals_unsliced(
+    demo_drive: Drive, config: Config
+) -> None:
+    frames = demo_drive.frames.combine_chunks()
+    chunked = pa.concat_tables(
+        [frames.slice(0, 7), frames.slice(7, 1), frames.slice(8, 411), frames.slice(419)]
+    )
+    assert chunked.column("points").num_chunks == 4
+    expected = infer_track(frames, config)
+    got = infer_track(chunked, config)
+    assert np.array_equal(got.x_cm, expected.x_cm)
+    assert np.array_equal(got.velocity_cm_s, expected.velocity_cm_s)
+    assert np.array_equal(got.y_cm, expected.y_cm)
+    assert np.array_equal(got.z_cm, expected.z_cm)
+
+
+def test_infer_track_non_binary_points_column_raises_value_error(config: Config) -> None:
+    ints = pa.table({"frame_id": [0], "timestamp_ns": [0], "points": pa.array([5], pa.int64())})
+    with pytest.raises(ValueError, match="binary"):
+        infer_track(ints, config)
+    lists = pa.table(
+        {
+            "frame_id": [0],
+            "timestamp_ns": [0],
+            "points": pa.array([[1, 2, 3]], pa.list_(pa.int32())),
+        }
+    )
+    with pytest.raises(ValueError, match="binary"):
+        infer_track(lists, config)
+    with pytest.raises(ValueError, match="binary"):
+        infer_track(iter(ints.to_batches()), config)

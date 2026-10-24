@@ -27,9 +27,9 @@ FRAME = 5  # a frame with a neighbour on each side
 
 
 @pytest.fixture(scope="module")
-def config() -> Config:
-    """Default config (16 fps, 100 cm cube, 10 points per axis)."""
-    return Config()
+def config(small_config: Config) -> Config:
+    """Small-lattice config (16 fps, 100 cm cube, 10 points per axis)."""
+    return small_config
 
 
 @pytest.fixture(scope="module")

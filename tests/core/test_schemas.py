@@ -52,7 +52,7 @@ def test_decode_rejects_bad_length() -> None:
 
 
 def test_schemas() -> None:
-    assert SCHEMA_VERSION == 1
+    assert SCHEMA_VERSION == 2
     assert FRAMES_SCHEMA.names == ["frame_id", "timestamp_ns", "points"]
     assert FRAMES_SCHEMA.field("points").type == pa.binary()
     assert FRAMES_SCHEMA.field("frame_id").type == pa.int64()
