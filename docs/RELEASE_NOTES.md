@@ -72,11 +72,30 @@ was changed in a copy, it printed `changed: ground_truth.parquet (sha256 mismatc
 exited with code 1. A missing or invalid scenario file gives a one-line `error: ...` message and
 exit code 1.
 
-Planned, not yet run (arrives with the inverse functions):
+Check that the generator can read its own drive back (the two-way check). Run on 2026-10-24,
+it took 1.41 s wall time and writes nothing to disk (log: `.claude/run-proofs/TASK-5-measure.log`, local, git-ignored (A28)):
 
 ```powershell
 python -m vl_data roundtrip --scenario src/vl_data/generator/scenarios/demo.yaml
 ```
+
+It prints:
+
+```text
+segments: expected 8, found 8
+max_boundary_error_frames: 4
+max_duration_error_frames: 5
+max_end_speed_error_cm_s: 24.4
+round trip OK
+```
+
+The same log records the exit code (0) and the demo-drive errors against ground truth: maximum centroid
+x error 0.498 cm and maximum velocity error 15.0 cm/s (`.claude/run-proofs/TASK-5-measure.py`).
+
+The limits are 6 frames, 8 frames and 40 cm/s (`tolerances` in `config/default.yaml`). If a
+check fails, the segment line and one line per problem are printed (problems on stderr) and the
+exit code is 1. A missing or invalid scenario file gives a one-line `error: ...` message and
+exit code 1.
 
 A scenario file looks like this:
 

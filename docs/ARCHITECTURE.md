@@ -55,7 +55,7 @@ Built so far: the project skeleton (`pyproject.toml`, `src/vl_data/__init__.py`,
 (`src/vl_data/generator/models.py`, `body.py`, `motion.py`, the demo scenario in
 `generator/scenarios/demo.yaml`, and `tests/generator/`), then the drive builder and writer
 (`drive.py`, `writer.py`) and the generator's `generate` and `verify` commands (`generator/cli.py`,
-registered by the root `cli.py`). Not built yet: `inverse.py`, `faults.py`, the `roundtrip` command
+registered by the root `cli.py`). The back direction (`inverse.py`) and the `roundtrip` command are built. Not built yet: `faults.py`
 and the Generate tab.
 
 ## Data flow inside the generator
@@ -168,8 +168,8 @@ recovers per-frame position and velocity from the frames, `fit_segments` fits mo
 pieces to them, and `compare_scenarios` checks the result against the original within stated
 limits. The back direction reads frames only, never ground truth.
 
-Limits measured on one demo drive (a throwaway script, 2026-10-23), and the limit set for the
-tests:
+Limits measured on the demo drive (2026-10-24; run log `.claude/run-proofs/TASK-5-measure.log`, local, git-ignored (A28), from `python -m vl_data roundtrip`
+and `.claude/run-proofs/TASK-5-measure.py`), and the limit set in `config/default.yaml`:
 
 | Quantity | Measured max | Test limit |
 |---|---|---|
@@ -179,9 +179,33 @@ tests:
 | Segment duration error | 5 frames | 8 frames |
 | End-speed error | 24.4 cm/s | 40 cm/s |
 
-Per-frame acceleration error reached 452 cm/s^2, larger than the demo's own signal (up to
-100 cm/s^2), so acceleration is fitted over windows (6.8 cm/s^2 over 16 frames). All of this
-error comes from rounding the points to whole centimetres.
+The earlier figures in `architecture_context.txt` (0.66 cm and 17.6 cm/s; not logged, not evidence) came from a planar
+variant that is not in the repo; the 1-D numbers above come from the logged run (0.498 cm,
+15.0 cm/s). The developer's throwaway run also reported a per-frame acceleration error of
+452 cm/s^2, larger than the demo's own signal (up to 100 cm/s^2), and 6.8 cm/s^2 when fitted over
+16-frame windows; those two figures are not logged and are not evidence. The rounding of the
+points to whole centimetres is the source of the logged errors.
+
+How the back direction works (`generator/inverse.py`): `infer_track` takes the mean x of each
+frame's points minus the lattice centre; velocity is the forward difference times 16. `fit_segments`
+splits the velocity series into linear pieces by penalised optimal partitioning (noise sigma 12 cm/s,
+penalty 40, pieces of at least 8 frames), extrapolates each line to its piece boundary for the end
+speed, and calls a piece a stop when its speed stays under 30 cm/s. A snap rule then makes the
+result a valid scenario (stops at 0 cm/s, the move before a stop ends at 0, a 0 -> 0 move is merged
+into the stops; ASSUMPTIONS A53). The demo gives 8 segments of the right types.
+
+Search domain of the property test (ASSUMPTIONS A14; see `_scenarios()` in
+`tests/generator/test_inverse.py`): up to 7 draws that each add a segment or are skipped, at most
+1,600 frames, 32 to 160 frames per segment, move end speeds on a 10 cm/s grid within +-600 cm/s,
+a nonzero end speed of at least 100 cm/s in size, stops only at rest, and a slope change of at
+least 50 cm/s^2 from the previous segment. The running slope starts at 0, so a first move also
+needs a slope of at least 50 cm/s^2 in size. One exception: when every draw is skipped, the
+strategy falls back to a single 16-frame stop, below the 32-frame minimum.
+Logged runs outside the domain (local, git-ignored, A28): 16-frame segments 0 -> 460 -> -180 -> 0
+gave an end-speed error of 42.4 cm/s, 24-frame segments 0 -> -460 -> 490 -> 0 gave 40.8 cm/s
+(limit 40), and 0 -> 100 -> 110 cm/s at 16 frames each (slope change 90 cm/s^2) was fitted as one
+piece, so shorter segments are not covered. A 3,000-example stress run was reported but is not
+logged; only the committed 40-example derandomized test is evidence.
 
 ## Error handling
 

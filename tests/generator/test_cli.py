@@ -130,3 +130,50 @@ def test_generate_out_is_a_file(runner: CliRunner, tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert "error:" in result.stderr
     assert "Traceback" not in result.output
+
+
+def test_roundtrip_command(runner: CliRunner) -> None:
+    """The command prints "round trip OK" and exits 0."""
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(DEMO)])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert "segments: expected 8, found 8" in lines
+    assert "round trip OK" in lines
+    values = {x.split(": ")[0]: float(x.split(": ")[1]) for x in lines if "max_" in x}
+    assert values["max_boundary_error_frames"] <= 6
+    assert values["max_duration_error_frames"] <= 8
+    assert values["max_end_speed_error_cm_s"] <= 40
+
+
+def test_roundtrip_missing_scenario_exits_1(runner: CliRunner, tmp_path: Path) -> None:
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(tmp_path / "nope.yaml")])
+    assert result.exit_code == 1
+    assert "error: cannot load scenario" in result.output
+
+
+def test_roundtrip_failed_comparison_exits_1(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed comparison prints the segment line and the problems, and exits 1."""
+    from vl_data.generator import cli as gen_cli
+    from vl_data.generator.inverse import RoundTripReport
+
+    bad = RoundTripReport(False, ["segment 0: expected stop, found move"], 0, 0, 0.0)
+    monkeypatch.setattr(gen_cli, "compare_scenarios", lambda *a, **k: bad)
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(DEMO)])
+    assert result.exit_code == 1
+    assert "segments: expected 8, found 8" in result.output
+    assert "segment 0: expected stop, found move" in result.output
+    assert "round trip OK" not in result.output
+
+
+def test_roundtrip_unbuildable_scenario_exits_1(runner: CliRunner, tmp_path: Path) -> None:
+    """A scenario whose body leaves the int32 cm range gives one error line, exit 1."""
+    path = tmp_path / "far.yaml"
+    path.write_text(
+        "start: {x_cm: 1000000000000000.0}\nsegments:\n  - {type: stop, duration_s: 1.0}\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["roundtrip", "--scenario", str(path)])
+    assert result.exit_code == 1
+    assert "error: cannot round-trip scenario" in result.output
