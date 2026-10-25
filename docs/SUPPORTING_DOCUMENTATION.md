@@ -246,7 +246,7 @@ prints a `warning:` line on stderr for every segment under 32 frames
 ### Fault injection
 
 `generator/faults.py` builds bad drives on purpose so Module 2 can be tested against known errors.
-`inject_faults(drive, faults)` returns a new `Drive` and a dict of counts per error code. Only the
+`inject_faults(drive, faults, frame_interval_ns=62_500_000)` returns a new `Drive` and a dict of counts per error code. Only the
 frames table changes; the ground truth, the scenario and the scenario hash are copied unchanged, and
 the input drive is not modified. A faulty drive can be written with `write_drive` and still passes
 `verify_drive`, because the manifest is built from the faulty file.
@@ -265,9 +265,10 @@ so an earlier drop or duplicate never moves the target. The returned dict holds 
 were injected, and each count is the number of fault objects with that code. These inputs raise
 `ValueError` instead of being applied: repeated `frame_id` values in the original table; an unknown
 `frame_id`; two faults on the same `frame_id` (including the same fault twice); a second
-`BreakSchema`; `delta_ns == 0`; `dx_cm == 0`; a `delta_ns` that leaves int64 or makes the
-timestamp equal to the row before or after; any two rows (a `DuplicateFrame` copy excepted) that
-end with the same timestamp; `CorruptPoints` on a frame with under 12 bytes; and a `dx_cm` that
+`BreakSchema`; a `delta_ns` that is not an int, is 0, leaves int64 or is not smaller than one frame interval
+(`frame_interval_ns`, ns) in size; `dx_cm == 0`; an input table whose own timestamps are equal or
+not increasing; final timestamps of the surviving rows that are not strictly increasing in original
+row order (dropped rows and `DuplicateFrame` copies are left out); `CorruptPoints` on a frame with under 12 bytes; and a `dx_cm` that
 overflows int32. Each fault is intended to trigger its own code; Module 2 behaviour is not yet
 verified.
 
