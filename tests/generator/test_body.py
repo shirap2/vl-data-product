@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from vl_data.core.schemas import ARROW_BINARY_LIMIT, BYTES_PER_POINT
 from vl_data.generator.body import cube_lattice, place_body
 
 
@@ -104,3 +105,32 @@ def test_lattice_rejects_repeated_points() -> None:
     lat = cube_lattice(10, 10)
     assert lat.shape == (1000, 3)
     assert len({tuple(row) for row in lat.tolist()}) == 1000
+
+
+def test_lattice_rejects_a_cube_past_the_int32_range() -> None:
+    """Axis values reach size_cm - 1; above int32 they used to wrap silently."""
+    assert int(cube_lattice(2**31, 2).max()) == 2**31 - 1  # the last size that fits
+    with pytest.raises(ValueError, match="int32"):
+        cube_lattice(2**31 + 1, 2)
+    with pytest.raises(ValueError, match="int32"):
+        cube_lattice(10**12, 5)
+
+
+def test_lattice_rejects_too_many_points_before_allocating() -> None:
+    """points_per_axis above 1,000,000 raises at once (a cube of it would be 10**18 points)."""
+    with pytest.raises(ValueError, match="1000000"):
+        cube_lattice(2_000_000, 1_000_001)
+
+
+def test_lattice_rejects_a_frame_too_big_for_arrow_before_allocating() -> None:
+    """points_per_axis 1,000,000 passed the old bound and would try 10**18 points."""
+    with pytest.raises(ValueError, match="points_per_axis"):
+        cube_lattice(2_000_000, 1_000_000)
+    # the Arrow boundary, pinned without allocating: 563 fits, 564 does not
+    assert 563**3 * BYTES_PER_POINT < ARROW_BINARY_LIMIT <= 564**3 * BYTES_PER_POINT
+    with pytest.raises(ValueError, match="points_per_axis"):
+        cube_lattice(1000, 564)
+
+
+def test_lattice_still_builds_the_shipped_full_density() -> None:
+    assert cube_lattice(100, 100).shape == (1_000_000, 3)

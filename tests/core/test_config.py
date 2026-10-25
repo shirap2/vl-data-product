@@ -98,3 +98,16 @@ def test_default_file_missing_gives_defaults(
 
 def test_frame_interval_for_other_fps() -> None:
     assert Config(fps=10).frame_interval_ns == 100_000_000
+
+
+def test_body_config_bounds_match_the_manifest() -> None:
+    """BodyConfig rejects what BodyInfo would reject later; the limits themselves are accepted."""
+    from vl_data.core.config import BodyConfig
+
+    assert BodyConfig(size_cm=2_147_483_647, points_per_axis=1_000_000).size_cm == 2_147_483_647
+    with pytest.raises(ValidationError):
+        BodyConfig(size_cm=2_147_483_648, points_per_axis=10)
+    with pytest.raises(ValidationError):
+        BodyConfig(size_cm=100, points_per_axis=1_000_001)
+    with pytest.raises(ValidationError):
+        Config.model_validate({"body": {"size_cm": 100, "points_per_axis": 10**9}})

@@ -4,9 +4,11 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from pydantic import BaseModel
 
 
@@ -57,16 +59,41 @@ def file_sha256(path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
+def _whole_number(name: str, value: Any) -> int:
+    """Return value as an int; it must have an integral value (100, 100.0, np.int64(100) are fine).
+
+    Raises ValueError for a bool, a str, a non-numeric value, or a non-integral or non-finite
+    number (100.5, nan, inf, np.float32(100.5), Decimal("100.5")). int() alone would truncate
+    100.5 to 100 and so give it the hash (and folder) of 100.
+    """
+    message = f"body {name} must be a whole number, got {value!r}"
+    if isinstance(value, bool | str | np.bool_):
+        raise ValueError(message)
+    if isinstance(value, Integral):
+        return int(value)
+    try:
+        as_float = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(message) from exc
+    if not as_float.is_integer():  # also false for nan and inf
+        raise ValueError(message)
+    return int(as_float)
+
+
 def drive_hash(scenario: dict[str, Any], body: Mapping[str, Any]) -> str:
     """SHA-256 of the canonical JSON of {"body": {size_cm, points_per_axis}, "scenario": ...}.
 
-    scenario is the validated scenario as a JSON-ready dict; body needs size_cm (cm) and
-    points_per_axis (count); both are coerced with int(), so 100.0 and 100 agree. Extra body
-    keys are ignored. The same scenario at another density
-    gets another hash, so each density has its own drive folder.
+    scenario is the validated scenario as a JSON-ready dict. body needs size_cm (cm) and
+    points_per_axis (count); each must be a whole number, so 100.0 and 100 agree and give the
+    same hash. A non-integral value such as 100.5 raises ValueError. Extra body keys are ignored.
+    The same scenario at another density gets another hash, so each density has its own drive
+    folder.
     """
     payload = {
-        "body": {"size_cm": int(body["size_cm"]), "points_per_axis": int(body["points_per_axis"])},
+        "body": {
+            "size_cm": _whole_number("size_cm", body["size_cm"]),
+            "points_per_axis": _whole_number("points_per_axis", body["points_per_axis"]),
+        },
         "scenario": scenario,
     }
     return sha256_hex(canonical_json(payload).encode("utf-8"))
@@ -77,7 +104,9 @@ def scenario_hash(scenario: BaseModel, body: Any = None) -> str:
 
     Without body this is the SHA-256 of the canonical JSON (UTF-8) of the scenario alone.
     body is a dict or an object with size_cm and points_per_axis (BodyConfig, BodyInfo).
-    A no-body hash is NOT a drive hash: a drive's hash always includes its body.
+    A no-body hash is NOT a drive hash: a drive's hash always includes its body, so never use
+    scenario_hash(scenario) to name or look up a drive folder. Raises ValueError for a body
+    value that is not a whole number (see drive_hash).
     """
     dumped = scenario.model_dump(mode="json")
     if body is None:

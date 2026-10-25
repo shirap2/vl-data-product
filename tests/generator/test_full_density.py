@@ -17,7 +17,7 @@ from vl_data.cli import app
 from vl_data.core.config import BodyConfig, Config, load_config
 from vl_data.core.hashing import file_sha256
 from vl_data.core.manifest import read_manifest, verify_drive
-from vl_data.core.schemas import FRAMES_SCHEMA, decode_points, encode_points
+from vl_data.core.schemas import BYTES_PER_POINT, FRAMES_SCHEMA, decode_points, encode_points
 from vl_data.generator import drive as drive_module
 from vl_data.generator import generate, generate_to_disk, write_drive
 from vl_data.generator.body import cube_lattice, place_body
@@ -66,13 +66,12 @@ def test_full_frame_has_a_million_points_and_the_eight_corners() -> None:
     assert points[999999].tolist() == [99, 99, 99]
 
 
-def test_shipped_density_fits_the_real_arrow_limit() -> None:
-    """The shipped BodyConfig() batch of BATCH_FRAMES frames is below the real limit."""
+def test_shipped_density_batch_is_below_the_arrow_binary_limit() -> None:
+    """The shipped BodyConfig() batch of BATCH_FRAMES frames is below the configured limit."""
     body = BodyConfig()
-    frame_bytes = body.points_per_axis**3 * 12  # bytes
+    frame_bytes = body.points_per_axis**3 * BYTES_PER_POINT  # bytes
     assert ROW_GROUP_ROWS == BATCH_FRAMES
     assert BATCH_FRAMES * frame_bytes < drive_module._ARROW_BINARY_LIMIT
-    assert drive_module._ARROW_BINARY_LIMIT == 2**31
 
 
 def test_batch_limit_boundary_is_exact(
@@ -239,3 +238,47 @@ def test_cli_generate_at_full_density_for_two_frames(
     manifest = read_manifest(next(out.iterdir()))
     assert manifest.body.points_per_axis == 100
     assert manifest.files["frames.parquet"].bytes < 2_000_000  # zstd; 24 MB raw
+
+
+def test_one_bytes_per_point_constant_is_shared() -> None:
+    """core.schemas.BYTES_PER_POINT is the only definition."""
+    from vl_data.core import schemas
+    from vl_data.generator import faults, inverse
+
+    assert schemas.BYTES_PER_POINT == 12
+    assert not hasattr(schemas, "_BYTES_PER_POINT")
+    for module in (drive_module, inverse, faults):
+        assert module.BYTES_PER_POINT is schemas.BYTES_PER_POINT
+        assert not hasattr(module, "_BYTES_PER_POINT")
+
+
+def test_generate_refuses_a_drive_over_the_memory_budget() -> None:
+    """100 full-density frames are 1.2 GB; generate() raises before allocating anything."""
+    scenario = Scenario.model_validate({"segments": [{"type": "stop", "duration_s": 6.25}]})
+    with pytest.raises(ValueError, match="generate_to_disk"):
+        generate(scenario, _full_config())
+
+
+def test_memory_budget_boundary_is_exact(
+    small_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drive of exactly the budget is built; one byte less is refused."""
+    scenario = Scenario.model_validate(SHORT)  # 48 frames
+    total = 48 * small_config.body.points_per_axis**3 * BYTES_PER_POINT  # bytes
+    monkeypatch.setattr(drive_module, "MAX_IN_MEMORY_BYTES", total)
+    drive = generate(scenario, small_config)
+    assert drive.frames.num_rows == 48
+    monkeypatch.setattr(drive_module, "MAX_IN_MEMORY_BYTES", total - 1)
+    with pytest.raises(ValueError, match="generate_to_disk"):
+        generate(scenario, small_config)
+    with pytest.raises(ValueError, match="generate_to_disk"):
+        write_drive(drive, Path("unused"), small_config)  # the guard comes before any file access
+
+
+def test_infer_track_rejects_a_frame_too_big_for_arrow_before_the_lattice() -> None:
+    """600 points per axis would be a 2.6 GB frame; no such drive exists, so refuse at once."""
+    from vl_data.generator.inverse import infer_track
+
+    config = Config(body=BodyConfig(size_cm=1000, points_per_axis=600))
+    with pytest.raises(ValueError, match="too large"):
+        infer_track([], config)

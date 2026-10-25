@@ -1,8 +1,10 @@
 """Tests for canonical JSON and hashing."""
 
 import hashlib
+from decimal import Decimal
 from pathlib import Path
 
+import numpy as np
 import pytest
 from pydantic import BaseModel
 
@@ -139,3 +141,52 @@ def test_drive_hash_coerces_integral_floats_in_the_body() -> None:
     as_float = drive_hash(scenario, {"size_cm": 100.0, "points_per_axis": 100.0})
     assert as_float == drive_hash(scenario, {"size_cm": 100, "points_per_axis": 100})
     assert as_float == GOLDEN_BODY_SHA256
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"size_cm": 100.5, "points_per_axis": 100},
+        {"size_cm": 100, "points_per_axis": 99.9},
+        {"size_cm": float("nan"), "points_per_axis": 100},
+        {"size_cm": 100, "points_per_axis": float("inf")},
+    ],
+)
+def test_drive_hash_rejects_a_non_integral_body(body: dict[str, float]) -> None:
+    """int() used to truncate 100.5 to 100, a collision with the 100 folder."""
+    scenario = _model().model_dump(mode="json")
+    with pytest.raises(ValueError, match="whole number"):
+        drive_hash(scenario, body)
+    with pytest.raises(ValueError, match="whole number"):
+        scenario_hash(_model(), body)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        True,
+        False,
+        np.bool_(True),
+        np.bool_(False),
+        "100",
+        np.float32(100.5),
+        Decimal("100.5"),
+        None,
+        [100],
+        Decimal("NaN"),
+    ],
+)
+def test_drive_hash_rejects_bool_str_and_non_integral_numeric_types(bad: object) -> None:
+    scenario = _model().model_dump(mode="json")
+    with pytest.raises(ValueError, match="whole number"):
+        drive_hash(scenario, {"size_cm": bad, "points_per_axis": 100})
+    with pytest.raises(ValueError, match="whole number"):
+        drive_hash(scenario, {"size_cm": 100, "points_per_axis": bad})
+
+
+@pytest.mark.parametrize(
+    "good", [np.int64(100), np.float64(100.0), np.float32(100.0), Decimal("100")]
+)
+def test_drive_hash_accepts_integral_numpy_and_decimal_values(good: object) -> None:
+    scenario = _model().model_dump(mode="json")
+    assert drive_hash(scenario, {"size_cm": good, "points_per_axis": good}) == GOLDEN_BODY_SHA256

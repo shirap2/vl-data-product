@@ -253,3 +253,27 @@ def test_write_drive_rejects_a_config_with_another_body(
     with pytest.raises(ValueError, match="different body"):
         write_drive(drive, tmp_path, other)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_failed_verification_never_replaces_a_good_folder(
+    scenario: Scenario, config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """verify_drive runs on the temp folder before the swap: a bad drive leaves the old one."""
+    from vl_data.core.manifest import VerifyResult
+
+    good = generate_to_disk(scenario, config, tmp_path)
+    before = _hashes(good)
+    (good / "marker.txt").write_text("old")  # not in the manifest; a rewrite would remove it
+    seen: list[Path] = []
+
+    def bad(path: Path) -> VerifyResult:
+        seen.append(path)
+        return VerifyResult(ok=False, problems=["changed: frames.parquet"])
+
+    monkeypatch.setattr("vl_data.generator.writer.verify_drive", bad)
+    with pytest.raises(RuntimeError, match="frames.parquet"):
+        generate_to_disk(scenario, config, tmp_path)
+    assert [p.name for p in tmp_path.iterdir()] == [good.name]  # no temp or aside leftovers
+    assert (good / "marker.txt").read_text() == "old"
+    assert {k: v for k, v in _hashes(good).items() if k != "marker.txt"} == before
+    assert seen[0].name.startswith(".tmp-")  # it checked the temp folder, not the final one

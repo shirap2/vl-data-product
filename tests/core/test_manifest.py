@@ -334,7 +334,7 @@ def test_manifest_with_negative_points_per_axis_is_rejected(tmp_path: Path) -> N
     assert "cannot read manifest.json" in result.problems[0]
 
 
-def test_manifest_with_huge_body_value_is_rejected_quickly(tmp_path: Path) -> None:
+def test_manifest_with_huge_body_value_is_rejected_before_cubing(tmp_path: Path) -> None:
     """A 400-digit points_per_axis is rejected before it is cubed; verify_drive reports it."""
     huge = "1" + "0" * 400
     drive = _manifest_json_with_body(
@@ -343,3 +343,4 @@ def test_manifest_with_huge_body_value_is_rejected_quickly(tmp_path: Path) -> No
     result = verify_drive(drive)
     assert not result.ok
     assert "cannot read manifest.json" in result.problems[0]
+    assert "points_per_axis" in result.problems[0]
