@@ -14,7 +14,6 @@ from vl_data.core.config import BodyConfig, Config
 from vl_data.core.manifest import read_manifest
 from vl_data.etl.body import expected_frame_count
 from vl_data.etl.config import LimitsConfig
-from vl_data.etl.facts import scan_frames
 from vl_data.etl.rules import RuleContext
 from vl_data.generator.body import cube_lattice
 from vl_data.generator.drive import Drive, generate
@@ -22,7 +21,7 @@ from vl_data.generator.faults import Fault, inject_faults
 from vl_data.generator.models import Scenario, load_scenario
 from vl_data.generator.writer import write_drive
 
-from .helpers import Written
+from .helpers import Written, scan_facts
 
 DEMO = Path(__file__).resolve().parents[2] / "src/vl_data/generator/scenarios/demo.yaml"
 
@@ -83,7 +82,7 @@ def make_ctx() -> Callable[..., RuleContext]:
         facts: pd.DataFrame | None = None,
     ) -> RuleContext:
         if facts is None:
-            facts = scan_frames(written.frames_path, written.offsets, 256)
+            facts = scan_facts(written.frames_path, written.offsets, 256)
         return RuleContext(
             facts=facts,
             schema=written.schema,

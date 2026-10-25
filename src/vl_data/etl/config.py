@@ -83,8 +83,15 @@ class EtlConfig(BaseModel):
     supported_schema_versions: list[StrictInt] = Field(
         default=[2], min_length=1, max_length=16
     )  # raw schema versions the loader accepts
-    # MiB of raw int32 xyz data per chunk; peak memory is about 2-3x this (payload + decoded copy)
+    # MiB of raw int32 xyz data per chunk (the batch size asked of Parquet). It does not bound
+    # memory: pyarrow reads a whole row group, see max_row_group_mib.
     chunk_mib: int = Field(default=128, ge=1, le=1024)
+    # Largest uncompressed Parquet row group (MiB) the loader will read. pyarrow reads a whole
+    # row group, so peak memory is about one row group plus one frame, not chunk_mib.
+    max_row_group_mib: int = Field(default=2048, ge=1)
+    # Largest points_per_frame (points) the loader accepts from a manifest. The manifest is not
+    # trusted until verify_drive has passed, so this bounds the lattice and keypoint-spec checks.
+    max_points_per_frame: int = Field(default=2_000_000, ge=1)
     lake_dir: Path = Path("warehouse")  # lake root
     limits: LimitsConfig = LimitsConfig()
     keypoints: list[KeypointSpec] = Field(

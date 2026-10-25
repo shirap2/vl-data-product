@@ -131,19 +131,42 @@ What the Lake does not do:
 - The glob characters `*` and `?` in the lake path could only be tested on non-Windows systems, because Windows does not allow them in file names.
 - Symlinks or junctions planted inside the lake folder are not detected.
 
-## Module 2: loader and ETL (lake built; the rest planned)
+## Module 2: loader and ETL (ingest built and measured at full density; command line and error-code file still to do)
 
-The lake storage (`core/lake.py`, `core/lake_schemas.py`) is built and tested, see the core modules
-table above. The ETL settings and the keypoint pick are built and tested too (below). The steps,
-rules and the ingest are design and have not been run. No number about them comes from a run.
+The lake storage (`core/lake.py`, `core/lake_schemas.py`), the ETL settings, the keypoint pick, the
+frame scan, the rules and the ingest (`etl/ingest.py`) are built and tested. The `ingest` command,
+the error-code document are not done yet.
+
+Measured full-density numbers (all measured on 2026-10-25 on one machine, demo drive `bf394b9bfb42`,
+1,000 frames of 1,000,000 points, row groups of 50 frames): the latest run took 44.7 s for the
+first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB
+(log `.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and
+1,718 MiB (`.claude/run-proofs/TASK-4-measure.log`). One first run in
+`.claude/run-proofs/TASK-4-measure-iter2.log` took 3,730 s (its re-ingest took 44.5 s); CPU time
+was only about 54 s while it ran. The cause is unknown and it was not reproduced in two later runs,
+so it is an open outlier: the next full-density run should log free memory and disk. The frame scan
+alone took 91 s and 1.59 GiB before the speed-up; after it, a 200-frame benchmark (100 points per
+axis) measured about 39 s per 1,000 frames (2.4 times faster). These are single measurements, not
+a benchmark suite.
+
+A drive folder is treated as hostile input. Before anything large is allocated: the manifest's points
+per frame must not exceed `max_points_per_frame` (2,000,000 points); the lattice is built only after
+`verify_drive` passes; the Parquet footer may claim at most 2 x expected frames + 1,000 rows (in total,
+per row group, and as the number of row groups); the scan stops if it streams more rows than the
+footer claimed; `scenario_hash` must be 64 lowercase hex characters; and stored quarantine text is
+cleaned of control characters, cut to 300 characters, and limited to 20 problems plus one summary row.
+Known limits: the row-group byte cap trusts the footer's size, which a compression bomb can lie about;
+the folder is assumed not to change during an ingest; `manifest.json` and linked data files are read by
+core code with no size cap (a follow-up for the generator session). `ground_truth.parquet` is hashed in
+full by `verify_drive` but never opened or parsed by the ingest.
 
 ### ETL settings and keypoints (built)
 
 | Module | What it holds | Rules worth knowing |
 |---|---|---|
-| `etl/config.py` | `EtlConfig`, `KeypointSpec`, `LimitsConfig`, `load_etl_config` | Read from `config/etl.yaml`. Unknown keys are rejected. Keypoint names use letters, digits and `_` (up to 64 characters). A keypoint index must be a real integer, so `true` or `9.0` is refused. `max_jump_cm(fps, frame_gap)` is `max_speed * frame_gap / fps + margin`, with the margin added once: 564.5 cm for one frame at 16 fps and 1,127.0 cm for two (checked by a test). Bounds: speed at most 100,000 cm/s, 256 keypoints, 1,024 MiB per chunk. A chunk is sized in MiB of point data (`chunk_mib`, default 128; peak memory is about 2 to 3 times that, because the payload and its decoded copy are both held), not in frames: `chunk_frames(points_per_frame)` gives 11,184 frames at 1,000 points per frame and 11 frames at 1,000,000 (checked by a test). A corner keypoint is written as its bits (x, y, z), each 0 or 1, so the same list works at any density. `VL_LAKE_DIR` overrides the lake folder when it is not empty. |
+| `etl/config.py` | `EtlConfig`, `KeypointSpec`, `LimitsConfig`, `load_etl_config` | Read from `config/etl.yaml`. Unknown keys are rejected. Keypoint names use letters, digits and `_` (up to 64 characters). A keypoint index must be a real integer, so `true` or `9.0` is refused. `max_jump_cm(fps, frame_gap)` is `max_speed * frame_gap / fps + margin`, with the margin added once: 564.5 cm for one frame at 16 fps and 1,127.0 cm for two (checked by a test). Bounds: speed at most 100,000 cm/s, 256 keypoints, 1,024 MiB per chunk. A chunk is sized in MiB of point data (`chunk_mib`, default 128), not in frames: `chunk_frames(points_per_frame)` gives 11,184 frames at 1,000 points per frame and 11 frames at 1,000,000 (checked by a test). The chunk is the batch size asked of Parquet; it does not bound memory, because pyarrow reads a whole row group. `max_row_group_mib` (default 2,048) is the largest uncompressed row group the ingest will read; a larger one rejects the drive. A corner keypoint is written as its bits (x, y, z), each 0 or 1, so the same list works at any density. `VL_LAKE_DIR` overrides the lake folder when it is not empty. |
 | `etl/keypoints.py` | `extract_keypoints` | Input is frames x points x 3 integers (cm). Output is frames x keypoints x 3 float64 (cm), in the order of the keypoint list. A corner is picked by lattice index; the centroid is the float64 mean of all points. Float input and out-of-range indices are refused. |
-| `config/etl.yaml` | the nine keypoints, speed limit 9,000 cm/s, margin 2 cm, chunk size 256 | The built-in defaults in `etl/config.py` are identical to this file (checked by a test). |
+| `config/etl.yaml` | the nine keypoints, speed limit 9,000 cm/s, margin 2 cm, chunk size 128 MiB, row-group cap 2,048 MiB | The built-in defaults in `etl/config.py` are identical to this file (checked by a test). |
 
 The corner lattice indices are derived from the number of points per axis n as `bx*(n-1)*n*n + by*(n-1)*n + bz*(n-1)`: 0, 9, 90, 99, 900, 909, 990, 999 at n = 10, and 0, 99, 9900, 9999, 990000, 990099, 999900, 999999 at n = 100 (both checked by a test). The ETL gets n from the drive: `etl/body.py` takes it from the manifest's `points_per_frame` (the integer cube root) and the cube size from the core config, until the generator adds body keys to the manifest. A timing check on 2026-10-24 showed `extract_keypoints` takes 0.045 s for 4 frames of 1,000,000 points (48 MB) on the development machine (Windows 11, 15.7 GB RAM).
 
@@ -151,9 +174,12 @@ The corner lattice indices are derived from the number of points per axis n as `
 
 | Module | What it holds | Rules worth knowing |
 |---|---|---|
-| `etl/facts.py` | `scan_frames` | Streams `frames.parquet` in chunks and returns one small record per row: frame number, timestamp, payload size, payload SHA-256, whether the cloud is valid, centroid. A bad payload never raises; a null frame number or timestamp, or a missing column, raises one `ValueError` (the caller checks the schema first). It never opens the ground-truth file. The size is checked before the payload is decoded. |
+| `etl/facts.py` | `scan_frames` | Streams `frames.parquet` in chunks and returns two things: one small record per row (frame number, timestamp, payload size, payload SHA-256, whether the cloud is valid, centroid) and the keypoints of every valid frame as a rows x keypoints x 3 array (NaN for an invalid frame). A bad payload never raises; a null frame number or timestamp, or a missing column, raises one `ValueError` (the caller checks the schema first). It never opens the ground-truth file. The size is checked before the payload is decoded. The deviation from the lattice is computed in int32 when that cannot overflow (int64 otherwise), the centroid is an exact integer sum divided by the point count, and the SHA-256 runs in a second thread; on a 200-frame drive of 100 points per axis this took 39 ms per frame against 94 to 100 ms for the earlier plain version (2.4 to 2.5 times faster; reading and decompressing the Parquet is about 25 ms of the 39). |
+| `etl/ingest.py` | `ingest_drive`, `IngestResult` | The entry point. Runs the gates, the scan, the rules and the three table swaps (next section). |
 | `etl/rules.py` | `RULES`, `RuleContext`, `run_rules` | Six rules with their codes, meaning, detection text and example fault. Drive rules (VL-005) and frame rules (VL-001 to VL-004, VL-006). VL-006 runs only on frames that passed the others. |
 | `etl/body.py` | `expected_frame_count` | The number of frames the scenario implies, used by VL-001. |
+
+On 2026-10-25 (ingest added) the ETL tests numbered 214 (481 in the whole suite, after the hostile-folder repair pass), and line coverage of the ETL package was 99% (`ingest.py` and `facts.py` 100%; the two uncovered lines are in `rules.py`). Ingesting the demo drive on a 1,000-point test body kept 1,000 of 1,000 frames and wrote 9,000 keypoint rows (checked by a test); each of the five frame faults gave exactly one quarantine row; a changed byte, a missing manifest, a schema-1 manifest, a renamed drive folder and a renamed points column each rejected the whole drive; ingesting twice left all three table files byte-identical.
 
 On 2026-10-24 the ETL package had 151 tests (381 in the whole suite), and line coverage of the ETL package was 99%. Running the rules on the demo drive (1,000 frames on a 125-point test body) gave no violations, and each of the six generator faults produced exactly its own code. The full-density behaviour of the scan is not measured yet.
 
@@ -165,20 +191,37 @@ stored as `<table>/drive=<hash12>/part-0.parquet` and queryable with DuckDB.
 
 Steps for one drive:
 
-1. **Integrity gate.** Read the manifest and check every file hash, the schema version and the
-   folder name. Any failure rejects the whole drive before a frame is read.
-2. **Schema gate.** Compare the frames file's columns with the agreed frames schema (VL-005).
-3. **Scan, pass 1.** Read the frames file in chunks. For each frame keep a small record: frame
-   number, timestamp, payload size, payload hash, whether the points form the expected cube,
-   and the centroid. Memory stays small because only these records are kept.
+1. **Gates, cheapest first.** The folder name must be a valid drive id (otherwise `ingest_drive`
+   raises `ValueError` and writes nothing). Then: the manifest reads; the folder name equals the
+   first 12 hex of the scenario hash; the schema version is in the supported list; the fps divides
+   a second; the body and scenario are valid; `frames.parquet` is listed; and only then every file
+   hash is checked (`verify_drive`, the slow step). Any failure rejects the whole drive before a
+   frame is read. The frame rate and frame spacing come from the manifest, not from a core config.
+2. **Schema gate.** Open the frames file (an unreadable file rejects the drive), refuse any row
+   group above `max_row_group_mib` (uncompressed), and compare the columns with the agreed frames
+   schema (VL-005).
+3. **One scan.** Read the frames file once, in chunks. For each frame keep a small record: frame
+   number, timestamp, payload size, payload hash, whether the points form the expected cube, and
+   the centroid. For each valid frame the scan also picks the keypoints (8 corners by index and
+   the centroid) into a small array, so the file is not read a second time. A frame number outside
+   0 to expected count minus 1 rejects the drive. A scan that raises (null frame number,
+   mistyped column, unreadable Parquet) rejects the drive with one `INTEGRITY` row.
 4. **Rules.** Run VL-001 to VL-004 on the records. Run VL-006 only on frames that passed those.
    VL-006 first picks a trusted starting frame: among the first three clean frames it takes the
    pair that agrees most tightly (distance as a fraction of the allowed jump) and starts from the
    earlier frame of that pair, so a teleported first frame cannot poison the rest. After that it
    compares each centroid with the last accepted frame.
-5. **Reduce, pass 2.** Read the file again, keep the accepted frames, and pick the 8 corners by
-   index plus the centroid.
-6. **Write.** Write each table's new partition aside, then swap it in for the old one.
+5. **Reduce.** Keep the keypoint rows of the accepted frames (taken by file row, so a repeated
+   frame number cannot mix them up), sorted by frame number and then by the order in
+   `config/etl.yaml`, and write them as one batch. The file bytes therefore do not depend on the
+   chunk size.
+6. **Write.** Write each table's new partition aside, then swap it in for the old one, in this
+   order: keypoints, quarantine, lineage. Lineage goes last and acts as the commit marker. A
+   rejected drive drops its keypoints first, then writes its quarantine rows and a lineage row
+   with status `rejected` and zero counts. The lineage row holds the scenario hash, the schema
+   version, the counts and the manifest hashes of the frames and ground-truth files (taken from
+   the manifest after the files were verified; the ground-truth file is never opened). A keypoint
+   spec that does not fit the body is a configuration error: `ValueError`, nothing written.
 
 | Code | Rule in short |
 |---|---|
@@ -330,9 +373,14 @@ verified.
 
 ## Error handling
 
-Integrity errors (a changed, missing or extra file, an unreadable manifest, an unsupported schema
-version) reject the whole drive, as does VL-005. A rejected drive gets one drive-level quarantine
-row, a lineage row with status `rejected`, and no keypoints. Frame errors VL-001 to VL-004 and
+Integrity errors reject the whole drive, as does VL-005. They are: a changed, missing or extra
+file (one `INTEGRITY` row per problem), an unreadable manifest or a schema-1 manifest without a
+body, an unsupported schema version, a folder name that is not the first 12 hex of the scenario
+hash, an fps that does not divide a second, an invalid body or scenario, a frames file that is not
+listed or cannot be read, a Parquet row group above `max_row_group_mib`, and a frame number outside
+0 to expected count minus 1. A rejected drive gets its drive-level quarantine rows, a lineage row
+with status `rejected`, and no keypoints. A folder name that is not a valid drive id and a keypoint
+spec that does not fit the body raise `ValueError` and write nothing. Frame errors VL-001 to VL-004 and
 VL-006 send only the failed frame to quarantine. See [ERROR_CODES.md](ERROR_CODES.md).
 
 ## Storage math

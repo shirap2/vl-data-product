@@ -16,7 +16,6 @@ from vl_data.core.manifest import read_manifest
 from vl_data.core.schemas import FRAMES_SCHEMA, encode_points
 from vl_data.etl.body import expected_frame_count
 from vl_data.etl.config import LimitsConfig
-from vl_data.etl.facts import scan_frames
 from vl_data.etl.rules import RULES, VIOLATION_COLUMNS, RuleContext, run_rules
 from vl_data.generator import faults as fault_module
 from vl_data.generator.body import cube_lattice
@@ -34,7 +33,7 @@ from vl_data.generator.faults import (
 from vl_data.generator.models import MoveSegment, Scenario, Start, StopSegment
 from vl_data.generator.writer import write_drive
 
-from .helpers import Written, build_table, columns
+from .helpers import Written, build_table, columns, scan_facts
 
 MakeCtx = Callable[..., RuleContext]
 WriteFaulty = Callable[..., Written]
@@ -252,7 +251,7 @@ def test_property_clean_drives_never_flagged(
     lattice = cube_lattice(40, 5)
     offsets = (lattice - lattice[0]).astype(np.int32)
     ctx = RuleContext(
-        facts=scan_frames(path, offsets, 64),
+        facts=scan_facts(path, offsets, 64),
         schema=pq.ParquetFile(path).schema_arrow,
         frame_count=expected_frame_count(read_manifest(out)),
         points_per_frame=offsets.shape[0],

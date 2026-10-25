@@ -4,11 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pyarrow as pa
 from numpy.typing import NDArray
 
 from vl_data.core.config import Config
 from vl_data.core.schemas import FRAMES_SCHEMA
+from vl_data.etl.facts import scan_frames
 from vl_data.generator.drive import Drive
 
 
@@ -39,3 +41,12 @@ def columns(drive: Drive) -> tuple[list[int], list[int], list[bytes | None]]:
         f.column("timestamp_ns").to_pylist(),
         f.column("points").to_pylist(),
     )
+
+
+MAX_ROWS = 100_000  # rows; a scan_frames cap far above any test file
+
+
+def scan_facts(path: Path, offsets: NDArray[np.int32], chunk_frames: int) -> pd.DataFrame:
+    """The facts half of scan_frames (no keypoints picked)."""
+    facts, _ = scan_frames(path, offsets, chunk_frames, [], MAX_ROWS)
+    return facts

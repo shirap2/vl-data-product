@@ -1,6 +1,8 @@
 # ETL (loader) configuration. Lengths in cm, speeds in cm/s.
 supported_schema_versions: [2]  # raw schema versions the loader accepts
 chunk_mib: 128  # MiB of raw int32 xyz point data per chunk (12 bytes per point)
+max_row_group_mib: 2048  # MiB; a frames row group above this (uncompressed) rejects the drive
+max_points_per_frame: 2000000  # points; a manifest above this rejects the drive before any allocation
 lake_dir: warehouse  # lake root; VL_LAKE_DIR overrides
 
 limits:
