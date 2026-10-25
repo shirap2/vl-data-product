@@ -15,6 +15,7 @@ docs/*.md
 !docs/ERROR_CODES.md
 !docs/ASSUMPTIONS.md
 !docs/ARCHITECTURE.md
+!docs/USE_CASES.md
 !docs/SUPPORTING_DOCUMENTATION.md
 .coverage
 .claude/clean-code/
