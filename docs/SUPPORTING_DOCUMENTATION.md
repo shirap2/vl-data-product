@@ -419,6 +419,31 @@ Speeds are cm/s and positive means forward. `move` changes speed in a straight l
 current speed to `end_speed_cm_s`. Durations must be a whole number of frames (a multiple of
 1/16 s).
 
+Generate a drive from the browser (the Generate tab). Run on 2026-10-25 (Windows, Python 3.12.6,
+Streamlit 1.66.1); only the server start and an HTTP check were run, the page was not opened in a
+browser by hand:
+
+```powershell
+python -m streamlit run src/vl_data/generator/ui/generate_app.py --server.headless true --server.address 127.0.0.1 --server.port 8765
+```
+
+`--server.address 127.0.0.1` binds the page to this computer only; `--server.port 8765` is the port
+that run used. Streamlit printed `Uvicorn server started on 127.0.0.1:8765` and `URL: http://127.0.0.1:8765`;
+the page answered with HTTP 200 and `/_stcore/health` answered `ok` (measured, log
+`.claude/run-proofs/TASK-7-iter3-server.log`, local, git-ignored, A28). The page has a
+start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`, `seed`; this description of the page comes from the code, not from a browser run), a segment table that starts with the
+demo rows (`type`, `duration_s` in steps of 0.0625 s, `end_speed_cm_s`; rows can be added and
+deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first shows
+a warning such as "This drive has 1000 frames, about 12,000,000,000 bytes (uncompressed point
+data)" (1,000 frames x 12,000,000 bytes at full density, computed; about 12,000 bytes per frame, 12,000,000 bytes for 1,000 frames, at the
+10-points-per-axis test body, computed). It then writes the drive under `raw_dir` with the same function
+the `generate` command uses, and shows the folder, the scenario hash and the frame count. A
+wrong table (a blank cell, a duration that is not a whole number of frames, over 2,000 frames)
+shows a red error and no plot. The tab is tested with Streamlit's test runner
+(`tests/generator/test_ui.py`, 21 tests and 6.09 s, measured in
+`.claude/run-proofs/TASK-7-iter3-ui-tests.log`; the whole suite was 284 tests, 100.00% coverage, measured in `TASK-7-iter3-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
+by hand is not covered by a test.
+
 Query and dashboard examples will be added when Modules 3 and 4 exist.
 
 ### Known issues
