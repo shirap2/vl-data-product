@@ -14,8 +14,8 @@ class MotionTolerances(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    velocity_cm_s: float = Field(default=20.0, gt=0, allow_inf_nan=False)  # cm/s
-    acceleration_cm_s2: float = Field(default=60.0, gt=0, allow_inf_nan=False)  # cm/s^2
+    velocity_cm_s: float = Field(default=19.4, gt=0, allow_inf_nan=False)  # cm/s
+    acceleration_cm_s2: float = Field(default=31.9, gt=0, allow_inf_nan=False)  # cm/s^2
 
 
 class MotionConfig(BaseModel):
@@ -25,7 +25,7 @@ class MotionConfig(BaseModel):
 
     window_frames: StrictInt = Field(default=16, le=1000)  # frames
     poly_order: Literal[2, 3] = 2  # polynomial order of the local fit
-    min_points: StrictInt = Field(default=5, ge=1, le=1000)  # samples needed in a window
+    min_points: StrictInt = Field(default=9, ge=1, le=1000)  # samples needed in a window
     # largest allowed spacing between neighbouring window points, in frame intervals
     # (4 bridges 3 missing frames)
     max_gap_frames: StrictInt = Field(default=4, ge=1, le=1000)

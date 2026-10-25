@@ -1,7 +1,10 @@
 """Helpers shared by the evaluation tests. Units: cm, cm/s, cm/s^2, frames, s."""
 
+import importlib.util
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 from numpy.typing import NDArray
@@ -84,3 +87,24 @@ def max_rms(estimate: NDArray[np.float64], truth: NDArray[np.float64]) -> tuple[
     """Independent max and RMS of estimate minus truth (unit of the inputs)."""
     diff = estimate - truth
     return float(np.abs(diff).max()), float(np.sqrt((diff**2).mean()))
+
+
+def load_sweep_tool() -> ModuleType:
+    """Import tools/motion_sweep.py (tools/ is not a package) once and return the module.
+
+    The module has its own name in sys.modules; the entry is removed again if the import fails.
+    """
+    name = "vl_tools_motion_sweep"
+    if name in sys.modules:
+        return sys.modules[name]
+    path = Path(__file__).resolve().parents[2] / "tools" / "motion_sweep.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module  # dataclasses look the module up by name
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module

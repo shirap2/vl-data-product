@@ -396,7 +396,163 @@ column) and closes its DuckDB connection after every query. The SDK never opens 
 The `motion` table (`MOTION_SCHEMA`) has one row per frame: `frame_id` int64, `timestamp_ns`
 int64, `x_cm` float64, `velocity_cm_s` float64 (null where there is no estimate),
 `acceleration_cm_s2` float64 (null likewise) and `n_points` int32 (samples in the estimator
-window). The parameter sweep table is added with the sweep task.
+window).
+
+### Estimator defaults, measured (sweep)
+
+The estimator fits a least-squares polynomial of order 2 or 3 to the centroid x of the frames
+inside a window centred on each frame, on the real timestamps, and reads velocity (cm/s) and
+acceleration (cm/s^2) from the fitted coefficients (`vl_data.usecase.estimator`). The window
+length, order, minimum points and gap limit are set in `config/motion.yaml`. The values there come
+from one command, run on 2026-10-25 (measured run time 23.9 s):
+
+```
+python tools/motion_sweep.py --write-yaml
+```
+
+The sweep generates two drives in memory with a 100 cm cube of 10 points per axis: the demo
+scenario (1,000 frames) and a harder drive of 624 frames (stop 4 s; ramp 0 to 600 cm/s over 3 s,
+200 cm/s^2; cruise 6 s; reversal 600 to -600 cm/s over 3 s, 400 cm/s^2; cruise 5 s; slow to 0 over
+3 s; stop 15 s). For each frame it takes the mean x of the points (the centroid, cm) and the true
+velocity and acceleration from the in-memory ground truth (no file and no lake is read). Errors are
+estimate minus truth. "int" columns use interior frames (no change of true acceleration within half
+a window of the frame, the last frame excluded; the same function `evaluate.interior_mask` that
+`evaluate_drive` uses); "all" columns use every frame with an estimate. The baseline row uses
+central differences of the centroid x (forward and backward at the ends) and a one-frame half
+window. For each cell `min_points` is `window // 2 + 1`, so the one-sided window at the clip ends
+still fits, and `max_gap_frames` is the config default, 4. Real output (measured):
+
+```
+Selection table: worst case over drives demo, hard, interior frames
+row                      window order min_pts interior  int vel max (cm/s)  int acc max (cm/s^2)
+window 8, order 2             8     2       5    91.2%              13.467                23.712
+window 8, order 3             8     3       5    91.2%              14.599                23.712
+window 12, order 2           12     2       7    87.3%              13.143                 8.282
+window 12, order 3           12     3       7    87.3%              13.486                 8.282
+window 16, order 2           16     2       9    83.5%              12.902                 4.378
+window 16, order 3           16     3       9    83.5%              13.515                 4.378
+window 24, order 2           24     2      13    75.8%              12.692                 1.568
+window 24, order 3           24     3      13    75.8%              12.979                 1.568
+window 32, order 2           32     2      17    68.1%              12.559                 0.653
+window 32, order 3           32     3      17    68.1%              12.784                 0.653
+window 48, order 2           48     2      25    53.2%               3.168                 0.286
+window 48, order 3           48     3      25    53.2%               3.232                 0.286
+per-frame differences         -     -       -    97.0%              19.000               452.000
+
+Drive demo: velocity in cm/s, acceleration in cm/s^2
+row                      frames int vel max int vel rms int acc max int acc rms all vel max all vel rms all acc max all acc rms
+window 8, order 2           936       4.533       1.525      23.712       5.799       6.400       1.595      65.091       7.564
+window 8, order 3           936       6.713       1.734      23.712       5.799       6.713       1.781      65.091       7.564
+window 12, order 2          908       3.701       1.485       8.282       2.047       8.967       1.673      57.031       5.927
+window 12, order 3          908       5.410       1.542       8.282       2.047       5.410       1.600      57.031       5.927
+window 16, order 2          880       3.520       1.460       4.378       1.000      11.412       1.836      55.678       6.240
+window 16, order 3          880       4.152       1.488       4.378       1.000       5.377       1.585      55.678       6.240
+window 24, order 2          824       3.278       1.418       1.568       0.350      16.271       2.404      54.568       7.299
+window 24, order 3          824       3.765       1.424       1.568       0.350       7.275       1.619      54.568       7.299
+window 32, order 2          768       3.235       1.372       0.653       0.142      20.877       3.220      52.905       8.319
+window 32, order 3          768       3.400       1.375       0.653       0.142       9.584       1.732      52.905       8.319
+window 48, order 2          656       3.168       1.244       0.286       0.047      30.263       5.365      51.928      10.086
+window 48, order 3          656       3.232       1.249       0.286       0.047      13.521       2.165      51.928      10.059
+per-frame differences       978       9.500       2.777     452.000     172.956       9.500       2.779     452.000     173.660
+
+Drive hard: velocity in cm/s, acceleration in cm/s^2
+row                      frames int vel max int vel rms int acc max int acc rms all vel max all vel rms all acc max all acc rms
+window 8, order 2           569      13.467       4.011      15.550       4.228      27.200       4.527     246.026      22.021
+window 8, order 3           569      14.599       4.056      15.550       4.228      14.599       4.313     246.026      22.021
+window 12, order 2          545      13.143       3.881       5.235       1.373      36.484       5.118     229.147      23.914
+window 12, order 3          545      13.486       3.889       5.235       1.373      18.302       4.322     229.147      23.914
+window 16, order 2          521      12.902       3.735       2.394       0.624      45.941       6.087     222.481      26.400
+window 16, order 3          521      13.515       3.741       2.394       0.624      22.348       4.420     222.481      26.400
+window 24, order 2          473      12.692       3.375       1.256       0.241      64.720       8.965     215.069      31.143
+window 24, order 3          473      12.979       3.378       1.256       0.241      30.394       4.819     215.069      31.143
+window 32, order 2          425      12.559       2.875       0.547       0.105      83.495      12.771     211.434      35.404
+window 32, order 3          425      12.784       2.875       0.547       0.105      38.252       5.511     211.434      35.404
+window 48, order 2          332       0.000       0.000       0.033       0.016     121.057      22.296     207.743      42.816
+window 48, order 3          332       0.000       0.000       0.033       0.016      53.951       7.708     207.743      42.816
+per-frame differences       605      19.000       4.424     400.000     162.934      19.000       4.517     656.000     169.026
+
+Chosen: window 16 frames, order 2, min_points 9, max_gap_frames 4
+Without the interior-fraction requirement (80%) the plain rule would choose window 48, order 2 (53.2% of frames interior in the worst drive)
+Measured worst-case interior max error, sweep drives: velocity 12.902 cm/s, acceleration 4.378 cm/s^2
+Measured worst-case interior max error, 1502 random and pinned scenarios (seed 0): velocity 8.848 cm/s, acceleration 21.212 cm/s^2
+Tolerances (x1.5 of the larger, rounded up to 0.1): velocity 19.4 cm/s, acceleration 31.9 cm/s^2
+```
+
+Selection rule. Among the window x order cells, take the lowest worst-case (larger of the two
+drives) interior acceleration max error; ties (errors equal to 6 decimals) go to the lower
+worst-case interior velocity max error, then the smaller window, then the lower order. A cell is
+eligible only if at least 80% of the frames of every drive are interior. This interior-fraction
+condition decides the result: the plain rule picks window 48, order 2 (measured 0.286 cm/s^2), but
+a 48-frame window leaves only 53.2% of the frames interior, so its small interior error hides
+large errors near every speed change (measured: all-frame acceleration max 207.7 cm/s^2 and
+velocity max 121.1 cm/s on the hard drive). Other shares give (measured, same table): 0.65 gives
+window 32, 0.7 and 0.75 give window 24, 0.8 gives window 16, 0.85 gives window 12. The 80% is a
+judgement. At window 48 the order 3 acceleration error is 0.28574749048425 and order 2 is
+0.28574749048971 (unrounded, measured): a difference of 5e-12 cm/s^2 is float round-off, so it
+is a tie, and the lower velocity error (3.168 against 3.232 cm/s) gives order 2. At the chosen
+window 16 the two orders also tie on acceleration (4.378 cm/s^2) and order 2 wins on velocity
+(12.902 against 13.515 cm/s). Without the tie rule the plain rule printed order 3 by round-off.
+
+The per-frame-difference baseline has an interior acceleration max error of 452.0 cm/s^2 (demo)
+and 400.0 cm/s^2 (hard), against 4.378 and 2.394 cm/s^2 for the chosen cell (measured):
+differencing integer-cm positions at 16 frames/s multiplies the 0.5 cm rounding by 2 x 16^2. The
+chosen cell has lower interior velocity and acceleration errors (max and RMS) and lower all-frame
+acceleration errors than the baseline on both drives (tests). It does not have a lower all-frame
+velocity max error: 11.4 against 9.5 cm/s (demo) and 45.9 against 19.0 cm/s (hard), because the
+16-frame fit smooths across speed changes and the clip ends (measured).
+
+Tolerances are 1.5 times the largest measured interior max error, rounded up to 0.1 (never below
+the measured value, never zero). The measured value is the largest of the chosen cell on the two
+sweep drives and on a seeded random-scenario search. The sweep drives start and end at rest, so
+they never test slow motion (where the integer-cm rounding of the centroid is a staircase) or a
+clip that ends while moving (the first and last 8 frames use a one-sided window). The search
+(`--random-search N`, default 1,500, `--seed`, default 0) draws N scenarios with numpy's RNG (up to
+5 legs of 48 to 96 frames, end speeds up to 400 cm/s) and always adds two pinned scenarios, the
+counterexamples the Hypothesis test found: one 48-frame move from 0 to 2 cm/s (interior
+acceleration max error 12.909 cm/s^2) and five 96-frame moves towards -68 cm/s (19.530 cm/s^2);
+the sweep drives alone would give only 4.378 cm/s^2 x 1.5 = 6.6 cm/s^2. Measured over the 1,502
+scenarios of the run above (seed 0): worst interior velocity 8.848 cm/s and acceleration
+21.212 cm/s^2. The tolerances are therefore velocity 12.902 x 1.5 = 19.4 cm/s (sweep drives) and
+acceleration 21.212 x 1.5 = 31.9 cm/s^2. Other seeds, 1,500 scenarios each (measured, not used
+for the YAML): seed 1 gives 9.806 cm/s and 25.364 cm/s^2, seed 2 gives 10.669 and 19.818, seed 3
+gives 12.381 and 19.896, all below the tolerances. The velocity error of about 12.5 cm/s on the
+hard drive is the forward-difference truth against the centred fit, a/32 for a = 400 cm/s^2
+(assumption M3-A17).
+
+Full-density check (measured once, 2026-10-25, 300 frames; the block is an excerpt of the command
+output, the first lines of the report):
+
+```
+python tools/motion_sweep.py --full-density-check 300
+Full-density check: 300 frames at 100 points per axis, 248 interior, 0 null; passed=True
+                       int vel max int vel rms int acc max int acc rms
+full density                 6.549       2.990       4.681       1.081
+10 points per axis           6.549       2.990       4.681       1.081
+Largest centroid x difference, full vs small lattice: 0.000000 cm
+Interior position error (full density): 0.4844 cm max
+Units: velocity cm/s, acceleration cm/s^2.
+```
+
+The 300 frames were generated at 100 points per axis with `generate_to_disk`, ingested into a temp
+lake, run through `compute_motion` and `evaluate_drive`, and the temp folders deleted. In this
+one run the interior errors match the small-lattice run of the same scenario to every printed
+digit and the centroid x values are identical (measured once on 300 frames). A unit test checks
+the identity behind it, centroid x = 49.5 + rint(x) for 2, 10 and 100 points per axis, on single
+frames. The check took 37.8 s in total. The tool limits N to 600 frames, prints the estimated
+size (12 MB per frame) and refuses to start when free disk space is under twice that estimate.
+
+### Technology reasons and alternatives
+
+- Estimator: a least-squares sliding window on the real timestamps. Alternatives considered:
+  per-frame differences (built and measured as the baseline above: interior acceleration max
+  error 452.0 and 400.0 cm/s^2); Savitzky-Golay (needs evenly spaced samples, so dropped frames
+  would need resampling, and adds the scipy dependency); a Kalman or RTS smoother (more complex,
+  needs a motion model and noise tuning; considered for a later version). The window fit needs
+  numpy only and uses the timestamps, so a dropped frame is a gap, not a shifted sample.
+- Storage and queries: Parquet files in the lake, read through DuckDB. Alternatives: SQLite or
+  Postgres (a server or a schema migration to run, and no file hash or folder swap per drive);
+  the SDK also returns Arrow tables. Pandas DataFrames were the alternative to Arrow tables: they
+  have no exact column types and no real nulls (a missing integer becomes a float NaN).
 
 ## Storage math
 
@@ -422,6 +578,7 @@ partitioning and compaction, and scheduled runs with an orchestrator.
   what "not atomic" means above). Re-ingesting repairs a crash.
 - The speed limit of 9,000 cm/s is a Tesla's top speed (322 km/h, 8,944 cm/s) rounded up. A
   faster vehicle would be flagged as impossible motion.
-- Tolerances come from one demo drive and may widen when the property tests run.
+- Tolerances come from two sweep drives and a random-scenario search (see the sweep section) and
+  may widen when other scenarios are tried; the sweep drives start and end at rest.
 
 The full assumption list is in [ASSUMPTIONS.md](ASSUMPTIONS.md).

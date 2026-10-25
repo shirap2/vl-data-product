@@ -66,7 +66,7 @@ class EvaluationError(Exception):
     """
 
 
-def _errors(estimate: NDArray[np.float64], truth: NDArray[np.float64]) -> MetricErrors:
+def max_abs_rms(estimate: NDArray[np.float64], truth: NDArray[np.float64]) -> MetricErrors:
     """Max and RMS of estimate minus truth, in the unit of the inputs (cm, cm/s or cm/s^2).
 
     NaN for both when there are no frames.
@@ -152,6 +152,20 @@ def _interior_mask(
     return interior
 
 
+def interior_mask(
+    truth_acceleration: NDArray[np.float64], half_window_frames: float
+) -> NDArray[np.bool_]:
+    """Interior frames of a drive whose frame ids are 0, 1, 2, ... (the sweep's definition).
+
+    truth_acceleration: true acceleration in cm/s^2, one value per frame, in frame order.
+    half_window_frames: half the window length, in frames. The result is the same mask
+    evaluate_drive uses (no change of true acceleration within half_window_frames of the
+    frame; the last frame is never interior), so the sweep and the evaluation agree.
+    """
+    ids = np.arange(truth_acceleration.size, dtype=np.int64)
+    return _interior_mask(ids, ids, truth_acceleration, half_window_frames)
+
+
 def _estimate(table: pa.Table, name: str) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
     """Values of a motion column and a mask of valid ones (not null and not NaN)."""
     column = table.column(name)
@@ -176,9 +190,9 @@ def _report(
     interior = _interior_mask(truth_ids, truth_ids, truth_acc, cfg.window_frames / 2)
     v_in = interior & v_ok
     a_in = interior & a_ok
-    position = _errors(x_est[interior], x_true[interior])
-    velocity = _errors(v_est[v_in], v_true[v_in])
-    acceleration = _errors(a_est[a_in], truth_acc[a_in])
+    position = max_abs_rms(x_est[interior], x_true[interior])
+    velocity = max_abs_rms(v_est[v_in], v_true[v_in])
+    acceleration = max_abs_rms(a_est[a_in], truth_acc[a_in])
     frames_interior = int(interior.sum())
     passed = bool(
         frames_interior > 0
@@ -206,8 +220,8 @@ def _report(
         position_cm=position,
         velocity_cm_s=velocity,
         acceleration_cm_s2=acceleration,
-        velocity_all_cm_s=_errors(v_est[v_ok], v_true[v_ok]),
-        acceleration_all_cm_s2=_errors(a_est[a_ok], truth_acc[a_ok]),
+        velocity_all_cm_s=max_abs_rms(v_est[v_ok], v_true[v_ok]),
+        acceleration_all_cm_s2=max_abs_rms(a_est[a_ok], truth_acc[a_ok]),
         passed=passed,
         frames=frames,
     )

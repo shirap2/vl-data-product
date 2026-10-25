@@ -430,3 +430,25 @@ def test_unreadable_manifest_raises(make_drive: MakeDrive) -> None:
     with pytest.raises(EvaluationError, match="cannot read manifest.json") as info:
         _run(d)
     assert str(d.drive_dir) not in str(info.value)
+
+
+def test_interior_mask_public_helper_matches_independent_definition() -> None:
+    # Acceleration steps at frames 10 and 20 (a difference from the previous frame).
+    acc = np.zeros(30)
+    acc[10:20] = 50.0
+    for half in (1.0, 4.0, 8.0):
+        got = evaluate.interior_mask(acc, half)
+        expected = interior_from_truth(np.arange(30), acc, half)
+        assert got.dtype == np.bool_ and got.shape == (30,)
+        assert np.array_equal(got, expected)
+    mask = evaluate.interior_mask(acc, 4.0)
+    assert not mask[-1]  # the last frame is never interior
+    assert not mask[10] and not mask[14] and mask[25] and not mask[16]
+    assert not mask[6] and mask[5]  # |6 - 10| = 4 is within the half window of 4; |5 - 10| is not
+
+
+def test_interior_mask_edge_cases() -> None:
+    flat = evaluate.interior_mask(np.zeros(5), 2.0)
+    assert flat.tolist() == [True, True, True, True, False]  # no change; only the last excluded
+    one = evaluate.interior_mask(np.array([3.0]), 2.0)
+    assert one.tolist() == [False]

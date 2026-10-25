@@ -1,10 +1,17 @@
 """Tests for the sliding-window polynomial motion estimator (cm, s, cm/s, cm/s^2)."""
 
+from typing import Any
+
 import numpy as np
 import pytest
+from hypothesis import HealthCheck, example, given, settings
+from hypothesis import strategies as st
 
-from vl_data.usecase.config import MotionConfig
+from vl_data.core.config import BodyConfig, Config
+from vl_data.usecase.config import MotionConfig, load_motion_config
 from vl_data.usecase.estimator import estimate_motion
+
+from .helpers import load_sweep_tool
 
 FPS = 100
 CFG = MotionConfig(window_frames=16, poly_order=2, min_points=5, max_gap_frames=4)
@@ -211,3 +218,46 @@ def test_empty_input_returns_empty() -> None:
     assert est.acceleration_cm_s2.shape == (0,)
     assert est.x_smooth_cm.shape == (0,)
     assert est.n_points.shape == (0,)
+
+
+sweep: Any = load_sweep_tool()
+_SMALL = Config(body=BodyConfig(size_cm=100, points_per_axis=10))
+# Legs (is_stop, frames, end speed cm/s): the same rules as the sweep's random search.
+_legs = st.lists(
+    st.tuples(
+        st.booleans(),  # True: stop (after slowing to 0 if moving), False: move
+        st.integers(min_value=sweep.LEG_MIN_FRAMES, max_value=sweep.LEG_MAX_FRAMES),  # frames
+        st.integers(min_value=-sweep.LEG_MAX_SPEED_CM_S, max_value=sweep.LEG_MAX_SPEED_CM_S),
+    ),
+    min_size=1,
+    max_size=sweep.MAX_LEGS,
+)
+
+
+def _check_within_yaml(legs: list[tuple[bool, int, int]]) -> None:
+    drive = sweep.drive_from_scenario("random", sweep.scenario_from_legs(legs), _SMALL)
+    cfg = load_motion_config()
+    errors = sweep.measure_drive(drive, cfg)
+    assert errors.frames_interior > 0
+    assert errors.velocity_interior.max_abs <= cfg.tolerances.velocity_cm_s
+    assert errors.acceleration_interior.max_abs <= cfg.tolerances.acceleration_cm_s2
+
+
+@settings(
+    max_examples=25,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+)
+@example(legs=[(False, 48, 2)])  # first counterexample: slow motion, 12.9 cm/s^2 error
+@example(legs=[(False, 96, -68)] * 5)  # worst of a 1,500-example search, 19.53 cm/s^2
+@given(legs=_legs)
+def test_property_matches_truth_within_bound(legs: list[tuple[bool, int, int]]) -> None:
+    _check_within_yaml(legs)
+
+
+@pytest.mark.parametrize("legs", [list(p) for p in sweep.PINNED_LEGS])
+def test_pinned_counterexamples_within_yaml_tolerances(legs: list[tuple[bool, int, int]]) -> None:
+    _check_within_yaml(legs)
+    # The slow-motion case really is above the bound the two sweep drives alone would give.
+    drive = sweep.drive_from_scenario("pinned", sweep.scenario_from_legs(legs), _SMALL)
+    assert sweep.measure_drive(drive, load_motion_config()).acceleration_interior.max_abs > 6.6
