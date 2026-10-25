@@ -128,7 +128,7 @@ How a drive is written:
   copy of the old drive). The temporary folder is removed on any error.
 - The frames are never computed from `ground_truth.parquet`. Only manifest hashing and verify
   read its bytes; the generator itself only writes it.
-- Measured on the 1,000-frame demo at 1,000,000 points per frame (a scratch script with the same 50-frame batching, `.claude/run-proofs/FULL-DENSITY-measure.log`): 75.1 s, peak working set 2,859 MiB, `frames.parquet` 287,134,433 bytes with zstd (4,024,944,648 bytes with snappy). The real `generate` command took 81 s including verification. The 100,000-frame cap was not run.
+- Measured on the 1,000-frame demo at 1,000,000 points per frame (a scratch script with the same 50-frame batching, `.claude/run-proofs/FULL-DENSITY-measure.log`): 75.1 s, peak working set 2,859 MiB, `frames.parquet` 287,134,433 bytes with zstd (4,024,944,648 bytes with snappy). The real `generate` command took 81 s including verification. The 2,000-frame cap was not run (about 24 GB raw, about 0.6 GB on disk and about 2.5 minutes, scaled from this run).
 
 Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 
@@ -290,7 +290,7 @@ A scenario holds a start state (position in cm and speed in cm/s) and a list of 
 `move` changes the speed in a straight line to an end speed (a negative speed means backward).
 A `stop` holds speed 0 and is allowed only when the vehicle is already at rest, so speed never
 jumps. Durations are in seconds and must be a whole number of frames (a multiple of 1/16 s).
-A scenario may have at most 100,000 frames (about 1 h 44 min at 16 fps).
+A scenario may have at most 2,000 frames (125 s at 16 fps).
 
 From a scenario, `motion.py` builds, frame by frame:
 
@@ -569,6 +569,31 @@ Speeds are cm/s and positive means forward. `move` changes speed in a straight l
 current speed to `end_speed_cm_s`. Durations must be a whole number of frames (a multiple of
 1/16 s).
 
+Generate a drive from the browser (the Generate tab). Run on 2026-10-25 (Windows, Python 3.12.6,
+Streamlit 1.66.1); only the server start and an HTTP check were run, the page was not opened in a
+browser by hand:
+
+```powershell
+python -m streamlit run src/vl_data/generator/ui/generate_app.py --server.headless true --server.address 127.0.0.1 --server.port 8765
+```
+
+`--server.address 127.0.0.1` binds the page to this computer only; `--server.port 8765` is the port
+that run used. Streamlit printed `Uvicorn server started on 127.0.0.1:8765` and `URL: http://127.0.0.1:8765`;
+the page answered with HTTP 200 and `/_stcore/health` answered `ok` (measured, log
+`.claude/run-proofs/TASK-7-iter3-server.log`, local, git-ignored, A28). The page has a
+start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`, `seed`; this description of the page comes from the code, not from a browser run), a segment table that starts with the
+demo rows (`type`, `duration_s` in steps of 0.0625 s, `end_speed_cm_s`; rows can be added and
+deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first shows
+a warning such as "This drive has 1000 frames, about 12,000,000,000 bytes (uncompressed point
+data)" (1,000 frames x 12,000,000 bytes at full density, computed; about 12,000 bytes per frame, 12,000,000 bytes for 1,000 frames, at the
+10-points-per-axis test body, computed). It then writes the drive under `raw_dir` with the same function
+the `generate` command uses, and shows the folder, the scenario hash and the frame count. A
+wrong table (a blank cell, a duration that is not a whole number of frames, over 2,000 frames)
+shows a red error and no plot. The tab is tested with Streamlit's test runner
+(`tests/generator/test_ui.py`, 21 tests and 6.09 s, measured in
+`.claude/run-proofs/TASK-7-iter3-ui-tests.log`; the whole suite was 284 tests, 100.00% coverage, measured in `TASK-7-iter3-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
+by hand is not covered by a test.
+
 Load the drive into the lake (planned, not yet run):
 
 ```powershell
@@ -588,7 +613,8 @@ exist.
 ### Known issues
 
 - No rotation. The vehicle never turns or yaws. A real vehicle rotates.
-- A drive at full density is large: 12 GB of points per 1,000 frames before compression (about 287 MB on disk with zstd), and generating or checking it takes more than a minute. `generate()` and `write_drive` hold a whole drive in memory; use the `generate` command (it streams).
+- A drive at full density is large: 12 GB of points per 1,000 frames before compression (about 287 MB on disk with zstd), and generating or checking it takes more than a minute. `generate()` and `write_drive` hold a whole drive in memory; use the `generate` command (it streams). A drive over 1 GiB of points (more than 89 frames at full density) is refused by `generate()` and `write_drive`.
+- A scenario may have at most 2,000 frames (125 s at 16 fps). At full density that is about 0.6 GB on disk and about 2.5 minutes to generate (scaled from the 1,000-frame run, not run). The cap is a validation limit in `generator.models`.
 - Motion is one-dimensional (along x).
 - Values are rounded to whole centimetres, which adds small errors. Per-frame acceleration is too
   noisy to use directly, so it is fitted over windows.

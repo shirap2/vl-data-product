@@ -9,10 +9,11 @@ import pyarrow as pa
 from numpy.typing import NDArray
 
 from vl_data.core.config import Config, FitConfig, ToleranceConfig
+from vl_data.core.schemas import BYTES_PER_POINT
 from vl_data.generator.body import cube_lattice
+from vl_data.generator.drive import check_batch_fits
 from vl_data.generator.models import MoveSegment, Scenario, Segment, StopSegment
 
-_BYTES_PER_POINT = 12  # three little-endian int32 values (cm)
 _DECIMALS = 2  # speeds are rounded to 0.01 cm/s so that "exactly 0" is well defined
 # Shortest segment, in frames (2 s at 16 frames/s), that the round trip is tested for (A14).
 # Shorter segments can merge into one fitted piece or give an end speed beyond tolerance.
@@ -84,8 +85,11 @@ def infer_track(frames: pa.Table | Iterable[pa.RecordBatch], config: Config) -> 
     difference of x times fps (frames/s), length n - 1. frames is a table (any chunks) or an
     iterable of record batches; frames are read one row at a time, never as a whole chunk.
     Raises ValueError for no frames, a missing points column, a null points entry, a frame
-    with no points, or a frame whose point count is not points_per_axis cubed.
+    with no points, or a frame whose point count is not points_per_axis cubed, and also for a
+    config whose frames would be too large for one Arrow binary array (checked first, so a huge
+    points_per_axis cannot run out of memory).
     """
+    check_batch_fits(config)  # before the lattice: a frame too big for Arrow cannot exist
     lattice = cube_lattice(config.body.size_cm, config.body.points_per_axis)
     centre = lattice.mean(axis=0, dtype=np.float64)  # cm, (x, y, z)
     expected = len(lattice)  # points per frame
@@ -98,10 +102,10 @@ def infer_track(frames: pa.Table | Iterable[pa.RecordBatch], config: Config) -> 
             buf = value.as_buffer()
             if buf.size == 0:
                 raise ValueError("a frame has no points")
-            if buf.size != expected * _BYTES_PER_POINT:
+            if buf.size != expected * BYTES_PER_POINT:
                 raise ValueError(
                     f"frame {len(centroids)} has {buf.size} bytes of points, expected "
-                    f"{expected} points ({expected * _BYTES_PER_POINT} bytes)"
+                    f"{expected} points ({expected * BYTES_PER_POINT} bytes)"
                 )
             points = np.frombuffer(buf, dtype="<i4").reshape(-1, 3)
             centroids.append(points.mean(axis=0, dtype=np.float64))

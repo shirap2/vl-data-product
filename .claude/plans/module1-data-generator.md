@@ -625,6 +625,12 @@ def render_generate_tab(config: Config) -> None:
   - Files: src/vl_data/generator/ui/__init__.py, generate_tab.py, generate_app.py, tests/generator/test_ui.py
   - REQs covered: REQ-11
   - Source: Streamlit docs, pandas docs
+  - Amendment 2026-10-25 (user decisions, question tool, after the source check CONFLICT):
+    1. Progress: Generate runs inside an `st.status` block ("Writing drive..." then complete or error), because the Streamlit test runner (AppTest) cannot see `st.spinner`.
+    2. Size warning: on the same click, before the write, the tab shows an `st.warning` with the frame count and about N bytes of uncompressed point data (`frame_count(scenario, config.fps) * check_batch_fits(config)`, from `BYTES_PER_POINT` via that function; label it "about, uncompressed"). No confirm step. The 2,000-frame cap stays in `Scenario` (`MAX_FRAMES`); the UI shows its pydantic error.
+    3. Tests pass a small-body `Config` to `render_generate_tab` (`AppTest.from_function(..., args=(config,))`, `timeout=` raised for the write). The parity test compares the UI drive (manifest `scenario_hash` and file hashes) with `generate_to_disk` and with the CLI under a monkeypatched default config path. No CLI change.
+    4. Reuse `check_batch_fits` from `drive.py` for bytes per frame; no new helper, no edit outside the TASK-7 file list (plus RELEASE_NOTES usage and ASSUMPTIONS rows).
+    5. `rows_to_scenario` converts every number with `float()` and the seed with `int()` (strict pydantic), drops `end_speed_cm_s` for stops, and turns blank/NaN cells into a clear error. UI catches `ValidationError`, `ValueError`, `OSError`, `RuntimeError` and shows `st.error`.
 
 ## Tests Per Task
 

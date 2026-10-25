@@ -157,9 +157,9 @@ def test_frame_count_rejects_unvalidated_non_finite_duration() -> None:
 
 
 def test_high_fps_cannot_defeat_frame_cap() -> None:
-    sc = make({"type": "stop", "duration_s": 100.0})  # 125,000 frames at 1250 fps
+    sc = make({"type": "stop", "duration_s": 2.0})  # 2,500 frames at 1250 fps
     with pytest.raises(ValueError, match="MAX_FRAMES"):
         frame_count(sc, 1250)
     with pytest.raises(ValueError, match="MAX_FRAMES"):
         speed_profile(sc, 1250)
-    assert frame_count(sc, 1000) == 100_000  # exactly at the cap is fine
+    assert frame_count(sc, 1000) == 2000  # exactly at the cap is fine
