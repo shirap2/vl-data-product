@@ -8,7 +8,7 @@ import numpy as np
 import pyarrow as pa
 from numpy.typing import NDArray
 
-from vl_data.core.schemas import decode_points, encode_points
+from vl_data.core.schemas import BYTES_PER_POINT, decode_points, encode_points
 from vl_data.generator.drive import Drive
 
 
@@ -65,7 +65,6 @@ _CODES: dict[type, str] = {
     BreakSchema: "VL-005",
     Teleport: "VL-006",
 }
-_BYTES_PER_POINT = 12  # three int32 values (cm)
 _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 _RENAMED_POINTS = "pts"  # the name BreakSchema gives the points column
 
@@ -112,7 +111,7 @@ def _validate(
             raise ValueError("dx_cm must not be 0")
         elif (
             isinstance(fault, CorruptPoints)
-            and len(points[row_of[fault.frame_id]]) < _BYTES_PER_POINT
+            and len(points[row_of[fault.frame_id]]) < BYTES_PER_POINT
         ):
             raise ValueError(f"frame_id {fault.frame_id} has fewer than 12 bytes of points")
 
@@ -149,7 +148,7 @@ def inject_faults(drive: Drive, faults: Sequence[Fault]) -> tuple[Drive, dict[st
         elif isinstance(fault, DuplicateFrame):
             copies = 2
         elif isinstance(fault, CorruptPoints):
-            pts = pts[:-_BYTES_PER_POINT]
+            pts = pts[:-BYTES_PER_POINT]
         elif isinstance(fault, Teleport):
             # int64 so the sum cannot wrap; encode_points range-checks it against int32
             moved: NDArray[np.int64] = decode_points(pts).astype(np.int64)

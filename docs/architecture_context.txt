@@ -44,8 +44,9 @@ MODULE 1: DATA GENERATOR
     stop(duration_s): speed held at 0.
   Durations are in seconds and validated to a whole number of frames (multiple of 1/16 s).
   Validation rejects a move whose start and end speed are both 0 (use stop).
-- Output: full point cloud per frame (1 m cube, 10x10x10 lattice = 1,000 points from 0 to
-  99 cm, fixed order, int32 cm, 16 fps, timestamp_ns = frame_id * 62,500,000),
+- Output: full point cloud per frame (1 m cube, 100x100x100 lattice = 1,000,000 points,
+  1 cm apart, from 0 to 99 cm, fixed order, int32 cm, 16 fps,
+  timestamp_ns = frame_id * 62,500,000),
   ground_truth.parquet (per-frame x position, velocity, acceleration), manifest.json.
 - Tech: numpy, pydantic, PyYAML, PyArrow, hashlib, Typer.
 - UI: minimal form in the Streamlit Generate tab (start values, editable segment table,
@@ -115,8 +116,9 @@ DECISIONS LOG (plan-loop for Module 1, 2026-10-23)
 - Approved extra sources: official docs of pydantic, PyYAML, Typer, hypothesis, Python
   hashlib/json.
 - Segments: move + stop (see Module 1). No turn, no cruise/brake types.
-- Point sample: 10x10x10 lattice, 1,000 points from 0 to 99 cm, includes the 8 corners,
-  fixed order, no seed needed.
+- Point sample: REPLACED on 2026-10-24, see "FULL DENSITY" below. (First plan: 10x10x10
+  lattice, 1,000 points from 0 to 99 cm; the 8 corners are lattice points, fixed order,
+  no seed needed. That part still holds.)
 - Scenario hash: SHA-256 of canonical JSON of the validated scenario (sorted keys, fixed
   number formatting) + seed.
 - infer_scenario: both, in two steps (infer_track, then fit_segments).
@@ -126,7 +128,8 @@ DECISIONS LOG (plan-loop for Module 1, 2026-10-23)
 - Start speed: scenario start block has speed, default 0 (the drive starts at rest).
 - Durations: seconds, validated to whole frames.
 
-MEASURED (throwaway script, 1000-frame demo, 10x10x10 integer lattice, float positions
+MEASURED (before the full-density change; throwaway script, 1000-frame demo, 10x10x10
+integer lattice, float positions
 rounded with rint; planar variant, 1-D numbers re-measured in the plan)
 - Position error max 0.66 cm (bound 0.87 cm). Speed error per frame max 17.6 cm/s (bound
   22.6). Acceleration error per frame max 462 cm/s^2 (bound 724), larger than a -150 cm/s^2
@@ -136,6 +139,32 @@ rounded with rint; planar variant, 1-D numbers re-measured in the plan)
 - Docs process (2026-10-23): docs are updated during each task (own sections only, numbers
   and commands from real runs), then one final docs pass runs every documented command from a
   fresh clone. docs/ASSUMPTIONS.md logs every assumption, and each task updates it.
+
+FULL DENSITY (user decision, 2026-10-24)
+- The generator produces the real density of the assignment's example: a 1 m cube of
+  100^3 = 1,000,000 points per frame, 1 cm apart (12,000,000 bytes per frame). The PDF
+  allows fewer frames ("save 1000 frames for example"), not thinner frames, so the
+  10x10x10 sample above was our own choice and is replaced. Config: points_per_axis = 100.
+- Corners (x-major order): indices 0, 99, 9,900, 9,999, 990,000, 990,099, 999,900 and
+  999,999 (compute them from cube_lattice, do not hard-code). Module 2 picks keypoints by
+  these indices; VL-004 (one point removed) is 999,999 points = 11,999,988 bytes.
+- Storage: zstd instead of snappy (a 2-frame test: snappy 8,048,769 bytes, zstd 549,552
+  bytes; to be repeated on a real drive). One Arrow binary array holds at most
+  2,147,483,647 bytes = 178 full frames, so frames are built and written in batches of
+  about 50 frames and streamed to the parquet file (row groups of about 50 rows). The
+  in-memory generate() stays for small drives and tests.
+- Demo: keep the 1,000-frame demo at full density (about 12 GB raw, calculated). Time,
+  peak memory and size on disk are measured first; if unacceptable, the user decides.
+- Hash: the body (size_cm, points_per_axis) joins the scenario hash, so each density has
+  its own hash and folder. This changes the demo hash (c8f597af59a6 today). Core files that
+  Module 2 and 3 import are changed only after agreeing with the Module 2 session.
+- infer_scenario also recovers start y and z from the frames.
+- Manifest: Module 2 asked for a self-describing manifest (body size_cm and points_per_axis;
+  key names not decided yet). schema_version becomes 2 if the layout changes.
+- Tests use a small-lattice config (10 per side) except tests of the full density.
+- Tolerances in the MEASURED block were measured on the 10x10x10 lattice and are re-checked
+  at full density. The task file is .claude/plans/followups/full-density.md; it runs after
+  TASK-6 (fault injection) and before TASK-7 (Generate tab).
 
 STILL OPEN
 - Nothing open for Module 1. (The API choice was confirmed on 2026-10-23, see DECISIONS.)

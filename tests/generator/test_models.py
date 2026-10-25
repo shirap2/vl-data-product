@@ -190,21 +190,26 @@ def test_huge_duration_gives_validation_error() -> None:
         make({"type": "stop", "duration_s": 1e18})
 
 
+def test_frame_cap_is_2000_frames_125_seconds() -> None:
+    assert MAX_FRAMES == 2000
+    assert MAX_FRAMES / FRAMES_PER_SECOND == 125.0  # s
+
+
 def test_single_segment_frame_cap_boundary() -> None:
-    ok = make({"type": "stop", "duration_s": MAX_FRAMES / FRAMES_PER_SECOND})  # 6250.0 s
+    ok = make({"type": "stop", "duration_s": MAX_FRAMES / FRAMES_PER_SECOND})  # 125.0 s
     assert frame_count(ok, FRAMES_PER_SECOND) == MAX_FRAMES
     with pytest.raises(ValidationError, match="MAX_FRAMES"):
         make({"type": "stop", "duration_s": (MAX_FRAMES + 1) / FRAMES_PER_SECOND})
 
 
 def test_total_frames_cap_across_segments() -> None:
-    half = (MAX_FRAMES // 2) / FRAMES_PER_SECOND  # 3125.0 s, 50,000 frames
+    half = (MAX_FRAMES // 2) / FRAMES_PER_SECOND  # 62.5 s, 1,000 frames
     ok = make(
         {"type": "move", "duration_s": half, "end_speed_cm_s": 100.0},
         {"type": "move", "duration_s": half, "end_speed_cm_s": 0.0},
     )
     assert frame_count(ok, FRAMES_PER_SECOND) == MAX_FRAMES
-    with pytest.raises(ValidationError, match="limit of 100000"):
+    with pytest.raises(ValidationError, match="limit of 2000"):
         make(
             {"type": "move", "duration_s": half, "end_speed_cm_s": 100.0},
             {"type": "move", "duration_s": half + 1 / FRAMES_PER_SECOND, "end_speed_cm_s": 0.0},

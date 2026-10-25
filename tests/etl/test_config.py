@@ -32,7 +32,8 @@ def _check_defaults(cfg: EtlConfig) -> None:
     assert cfg.limits.max_speed_cm_s == 9000.0
     assert cfg.limits.rounding_margin_cm == 2.0
     assert cfg.chunk_mib == 128
-    assert cfg.supported_schema_versions == [1]
+    assert cfg.max_row_group_mib == 2048
+    assert cfg.supported_schema_versions == [2]
     assert cfg.lake_dir == Path("warehouse")
     for spec, (name, bits) in zip(cfg.keypoints[:8], CORNERS.items(), strict=True):
         assert (spec.name, spec.kind, spec.bits, spec.index) == (name, "corner", bits, None)
@@ -142,6 +143,26 @@ def test_chunk_mib_above_cap_rejected() -> None:
     assert EtlConfig(chunk_mib=1024).chunk_mib == 1024
     with pytest.raises(ValidationError):
         EtlConfig(chunk_mib=1025)
+
+
+def test_max_points_per_frame_default_and_bounds(tmp_path: Path) -> None:
+    assert EtlConfig().max_points_per_frame == 2_000_000
+    assert EtlConfig(max_points_per_frame=1).max_points_per_frame == 1
+    with pytest.raises(ValidationError):
+        EtlConfig(max_points_per_frame=0)
+    path = tmp_path / "e.yaml"
+    path.write_text("max_points_per_frame: 5000\n", encoding="utf-8")
+    assert load_etl_config(path).max_points_per_frame == 5000
+
+
+def test_max_row_group_mib_default_and_bounds(tmp_path: Path) -> None:
+    assert EtlConfig().max_row_group_mib == 2048
+    assert EtlConfig(max_row_group_mib=1).max_row_group_mib == 1
+    with pytest.raises(ValidationError):
+        EtlConfig(max_row_group_mib=0)
+    path = tmp_path / "e.yaml"
+    path.write_text("max_row_group_mib: 600\n", encoding="utf-8")
+    assert load_etl_config(path).max_row_group_mib == 600
 
 
 def test_chunk_frames_from_chunk_mib() -> None:

@@ -16,12 +16,12 @@ continue through the pipeline.
 
 | Code | Name | What it means | How it is detected | Example fault used in tests |
 |---|---|---|---|---|
-| VL-001 | Missing frame | A frame number is absent from the sequence. | A number from 0 to `frame_count - 1` (from the manifest) has no row. One quarantine row per missing number. | `DropFrame(frame_id)` |
+| VL-001 | Missing frame | A frame number is absent from the sequence. | A number from 0 to the expected frame count minus 1 has no row. The expected count comes from the scenario in the manifest, not from `manifest.frame_count`. One quarantine row per missing number. | `DropFrame(frame_id)` |
 | VL-002 | Timestamp gap | A frame's timestamp is not what its frame number implies. | The timestamp is not `frame_id x 62,500,000 ns`. | `ShiftTimestamp(frame_id, delta_ns)` |
 | VL-003 | Duplicate frame | The same frame number appears more than once. | A repeated `frame_id`. Identical copies keep the first and quarantine the repeats; differing copies are all quarantined. | `DuplicateFrame(frame_id)` |
-| VL-004 | Corrupt point cloud | A frame's points are not a valid 1,000-point cube. | The payload is not 1,000 x 3 int32, or the points do not match the expected lattice. | `CorruptPoints(frame_id)` |
+| VL-004 | Corrupt point cloud | A frame's points are not a valid 1,000-point cube. | The payload is not a multiple of 12 bytes, does not hold the drive's points per frame (12,000,000 bytes at the shipped density), or a point is more than rounding away from the expected lattice (per axis the offsets may spread by at most 1 cm). | `CorruptPoints(frame_id)` |
 | VL-005 | Schema mismatch | The table does not have the expected columns and types. | The schema differs from the frames schema. Rejects the whole drive. | `BreakSchema()` |
-| VL-006 | Impossible motion | The distance moved between two frames is beyond what the vehicle can do. | The centroid is farther from the last accepted frame than the configured maximum speed allows (scaled by the frame gap, plus a rounding margin). Acceleration is not tested. | `Teleport(frame_id, dx_cm)` |
+| VL-006 | Impossible motion | The distance moved between two frames is beyond what the vehicle can do. | The centroid is farther from the last accepted frame than the configured maximum speed allows (scaled by the frame gap, plus a rounding margin). The starting frame is the earlier frame of the most tightly agreeing pair among the first three clean frames. Acceleration is not tested. | `Teleport(frame_id, dx_cm)` |
 
 ### Integrity errors (outside the VL codes)
 
@@ -105,32 +105,30 @@ registered by the root `cli.py`). The back direction (`inverse.py`) and the `rou
 ### Data flow inside the generator
 
 1. Load and validate the scenario YAML (start values and a list of `move` and `stop` segments).
-2. Hash it: SHA-256 of the canonical JSON gives the scenario hash.
+2. Hash it: SHA-256 of the canonical JSON of the body (`size_cm`, `points_per_axis`) and the scenario gives the drive hash.
 3. Build the speed for every frame (a straight-line ramp inside each segment), integrate the
    position, and derive ground-truth velocity and acceleration by differences.
-4. Build each frame's points: a 10x10x10 lattice shifted by the rounded position.
+4. Build each frame's points: a 100x100x100 lattice (1,000,000 points) shifted by the rounded position.
 5. Write the frames and ground truth to a temporary folder, build the manifest from the file
    hashes, swap the folder into place, and verify it.
 
 `generate` in `drive.py` does steps 2 to 4 in memory and returns a `Drive` (scenario, hash, frames
-table, ground-truth table). It builds the frames table in batches of 1,000 frames. `write_drive`
-in `writer.py` does step 5, and `generate_to_disk` runs both and then `verify_drive`; the command
-line uses `generate_to_disk`.
+table, ground-truth table) by collecting `iter_frame_batches`, which yields record batches of 50 frames; at full density this is only for small drives. `write_drive` in `writer.py` does step 5 for such a drive. `generate_to_disk` streams the batches straight into the Parquet file (memory near one 600 MB batch), writes the ground truth and manifest, and then runs `verify_drive`; the command line uses `generate_to_disk`.
 
 How a drive is written:
 
 - The temporary folder is `.tmp-*` inside the output folder and holds only the two Parquet files
   while the manifest is built. `manifest.json` is written last.
 - Parquet options are fixed so the same scenario gives the same bytes on the same pyarrow version:
-  format version 2.6, snappy compression, no dictionary, statistics on, data page version 2.0 and
-  row groups of 1,000 frames (the file is written one row group at a time).
+  format version 2.6, zstd compression, no dictionary, statistics on, data page version 2.0 and
+  row groups of 50 rows (the file is written one row group at a time; both write paths give the same bytes).
 - An existing folder for the same hash is moved into a `.old-*` folder next to it, the new folder
   is renamed into place, and then the `.old-*` folder is deleted. If the last rename fails, the
   old folder is moved back; if that also fails, the `.old-*` folder is kept (it holds the only
   copy of the old drive). The temporary folder is removed on any error.
 - The frames are never computed from `ground_truth.parquet`. Only manifest hashing and verify
   read its bytes; the generator itself only writes it.
-- At the 100,000-frame cap the frames table is about 1.2 GB in memory. This is a calculation (100,000 frames x 12,000 bytes), not a measurement. The peak was not measured.
+- Measured on the 1,000-frame demo at 1,000,000 points per frame (a scratch script with the same 50-frame batching, `.claude/run-proofs/FULL-DENSITY-measure.log`): 75.1 s, peak working set 2,859 MiB, `frames.parquet` 287,134,433 bytes with zstd (4,024,944,648 bytes with snappy). The real `generate` command took 81 s including verification. The 2,000-frame cap was not run (about 24 GB raw, about 0.6 GB on disk and about 2.5 minutes, scaled from this run).
 
 Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 
@@ -138,9 +136,9 @@ Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 
 | Table or file | Layer | Content |
 |---|---|---|
-| `frames.parquet` | raw drive | frame_id, timestamp_ns, points (1,000 x 3 int32, one binary column) |
+| `frames.parquet` | raw drive | frame_id, timestamp_ns, points (1,000,000 x 3 int32 = 12,000,000 bytes at the shipped density, one binary column) |
 | `ground_truth.parquet` | raw drive | frame_id, timestamp_ns, x_cm, velocity_cm_s, acceleration_cm_s2 |
-| `manifest.json` | raw drive | scenario hash, scenario, fps, counts, SHA-256 and size of each file |
+| `manifest.json` | raw drive | schema version 2, drive hash, scenario, body (`size_cm`, `points_per_axis`), fps, counts, SHA-256 and size of each file |
 | keypoints | bronze (planned) | one row per keypoint: frame_id, timestamp_ns, keypoint name, x, y, z (cm, float64); 9 rows per frame |
 | quarantine | bronze (planned) | one row per rejected frame or missing frame number: frame_id, row_index, code, message; a drive-level row has no frame_id |
 | lineage | bronze (planned) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames and ground-truth file hashes |
@@ -156,7 +154,7 @@ timestamp, and numeric measures.
 |---|---|---|
 | `core/config.py` | `Config` (fps, raw_dir, body, tolerances, fit) and `load_config` | Unknown keys and non-positive values are rejected. `fps` must divide 1,000,000,000 ns evenly (16 fps gives 62,500,000 ns). The environment variable `VL_RAW_DIR` overrides `raw_dir`. |
 | `core/hashing.py` | `canonical_json`, `sha256_hex`, `file_sha256`, `scenario_hash` | Keys are sorted, there are no spaces, and a float with a whole value is written as an int, so 600 and 600.0 hash the same. NaN and infinity are rejected. |
-| `core/schemas.py` | `FRAMES_SCHEMA`, `GROUND_TRUTH_SCHEMA`, `encode_points`, `decode_points` | A frame's points are 1,000 x 3 int32 values in cm, little-endian, row-major, in one binary column. |
+| `core/schemas.py` | `FRAMES_SCHEMA`, `GROUND_TRUTH_SCHEMA`, `encode_points`, `decode_points` | A frame's points are `points_per_frame` x 3 int32 values in cm (1,000,000 at the shipped density), little-endian, row-major, in one binary column. |
 | `core/manifest.py` | `Manifest`, `FileEntry`, `VerifyResult`, build, write, read, `verify_drive` | The manifest lists every file in the drive folder except itself. `verify_drive` reports changed, missing, extra and invalidly named files and a scenario that no longer matches its hash. A bad manifest, an unreadable file or a scenario that cannot be hashed is a reported problem, not an error. A pathological listed name (hundreds of characters) or a folder that cannot be listed can still raise an OSError. |
 | `core/lake_schemas.py` | `KEYPOINTS_SCHEMA`, `QUARANTINE_SCHEMA`, `LINEAGE_SCHEMA`, `TABLE_SCHEMAS` | One plain dict of table name to Arrow schema. A new table (for example `motion`) is one new entry; `Lake` accepts only names in this dict. |
 | `core/lake.py` | `Lake`: `swap_partition`, `drop_partition`, `list_drives`, `read`, `connect` | Layout `<root>/<table>/drive=<id>/part-0.parquet`. A swap writes a new folder under `<root>/_swap`, moves the old partition aside, renames the new one in, then deletes the old one; a failed write or rename keeps the old partition. The Parquet write options are pinned, so the same input gives the same bytes on one pyarrow version and the same batch boundaries (checked by a test). `connect()` returns an in-memory DuckDB connection with one view per table; the drive column is a VARCHAR, so a numeric-looking id is never read as a number. |
@@ -172,23 +170,59 @@ What the Lake does not do:
 - The glob characters `*` and `?` in the lake path could only be tested on non-Windows systems, because Windows does not allow them in file names.
 - Symlinks or junctions planted inside the lake folder are not detected.
 
-### Module 2: loader and ETL (lake built; the rest planned)
+### Module 2: loader and ETL (ingest built and measured at full density; command line and error-code file still to do)
 
-The lake storage (`core/lake.py`, `core/lake_schemas.py`) is built and tested, see the core modules
-table above. The ETL settings and the keypoint pick are built and tested too (below). The steps,
-rules and the ingest are design and have not been run. No number about them comes from a run.
+The lake storage (`core/lake.py`, `core/lake_schemas.py`), the ETL settings, the keypoint pick, the
+frame scan, the rules and the ingest (`etl/ingest.py`) are built and tested. The `ingest` command,
+the error-code document are not done yet.
+
+Measured full-density numbers (all measured on 2026-10-25 on one machine, demo drive `bf394b9bfb42`,
+1,000 frames of 1,000,000 points, row groups of 50 frames): the latest run took 44.7 s for the
+first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB
+(log `.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and
+1,718 MiB (`.claude/run-proofs/TASK-4-measure.log`). One first run in
+`.claude/run-proofs/TASK-4-measure-iter2.log` took 3,730 s (its re-ingest took 44.5 s); CPU time
+was only about 54 s while it ran. The cause is unknown and it was not reproduced in two later runs,
+so it is an open outlier: the next full-density run should log free memory and disk. The frame scan
+alone took 91 s and 1.59 GiB before the speed-up; after it, a 200-frame benchmark (100 points per
+axis) measured about 39 s per 1,000 frames (2.4 times faster). These are single measurements, not
+a benchmark suite.
+
+A drive folder is treated as hostile input. Before anything large is allocated: the manifest's points
+per frame must not exceed `max_points_per_frame` (2,000,000 points); the lattice is built only after
+`verify_drive` passes; the Parquet footer may claim at most 2 x expected frames + 1,000 rows (in total,
+per row group, and as the number of row groups); the scan stops if it streams more rows than the
+footer claimed; `scenario_hash` must be 64 lowercase hex characters; and stored quarantine text is
+cleaned of control characters, cut to 300 characters, and limited to 20 problems plus one summary row.
+Known limits: the row-group byte cap trusts the footer's size, which a compression bomb can lie about;
+the folder is assumed not to change during an ingest; `manifest.json` and linked data files are read by
+core code with no size cap (a follow-up for the generator session). `ground_truth.parquet` is hashed in
+full by `verify_drive` but never opened or parsed by the ingest.
 
 #### ETL settings and keypoints (built)
 
 | Module | What it holds | Rules worth knowing |
 |---|---|---|
-| `etl/config.py` | `EtlConfig`, `KeypointSpec`, `LimitsConfig`, `load_etl_config` | Read from `config/etl.yaml`. Unknown keys are rejected. Keypoint names use letters, digits and `_` (up to 64 characters). A keypoint index must be a real integer, so `true` or `9.0` is refused. `max_jump_cm(fps, frame_gap)` is `max_speed * frame_gap / fps + margin`, with the margin added once: 564.5 cm for one frame at 16 fps and 1,127.0 cm for two (checked by a test). Bounds: speed at most 100,000 cm/s, 256 keypoints, 1,024 MiB per chunk. A chunk is sized in MiB of point data (`chunk_mib`, default 128; peak memory is about 2 to 3 times that, because the payload and its decoded copy are both held), not in frames: `chunk_frames(points_per_frame)` gives 11,184 frames at 1,000 points per frame and 11 frames at 1,000,000 (checked by a test). A corner keypoint is written as its bits (x, y, z), each 0 or 1, so the same list works at any density. `VL_LAKE_DIR` overrides the lake folder when it is not empty. |
+| `etl/config.py` | `EtlConfig`, `KeypointSpec`, `LimitsConfig`, `load_etl_config` | Read from `config/etl.yaml`. Unknown keys are rejected. Keypoint names use letters, digits and `_` (up to 64 characters). A keypoint index must be a real integer, so `true` or `9.0` is refused. `max_jump_cm(fps, frame_gap)` is `max_speed * frame_gap / fps + margin`, with the margin added once: 564.5 cm for one frame at 16 fps and 1,127.0 cm for two (checked by a test). Bounds: speed at most 100,000 cm/s, 256 keypoints, 1,024 MiB per chunk. A chunk is sized in MiB of point data (`chunk_mib`, default 128), not in frames: `chunk_frames(points_per_frame)` gives 11,184 frames at 1,000 points per frame and 11 frames at 1,000,000 (checked by a test). The chunk is the batch size asked of Parquet; it does not bound memory, because pyarrow reads a whole row group. `max_row_group_mib` (default 2,048) is the largest uncompressed row group the ingest will read; a larger one rejects the drive. A corner keypoint is written as its bits (x, y, z), each 0 or 1, so the same list works at any density. `VL_LAKE_DIR` overrides the lake folder when it is not empty. |
 | `etl/keypoints.py` | `extract_keypoints` | Input is frames x points x 3 integers (cm). Output is frames x keypoints x 3 float64 (cm), in the order of the keypoint list. A corner is picked by lattice index; the centroid is the float64 mean of all points. Float input and out-of-range indices are refused. |
-| `config/etl.yaml` | the nine keypoints, speed limit 9,000 cm/s, margin 2 cm, chunk size 256 | The built-in defaults in `etl/config.py` are identical to this file (checked by a test). |
+| `config/etl.yaml` | the nine keypoints, speed limit 9,000 cm/s, margin 2 cm, chunk size 128 MiB, row-group cap 2,048 MiB | The built-in defaults in `etl/config.py` are identical to this file (checked by a test). |
 
 The corner lattice indices are derived from the number of points per axis n as `bx*(n-1)*n*n + by*(n-1)*n + bz*(n-1)`: 0, 9, 90, 99, 900, 909, 990, 999 at n = 10, and 0, 99, 9900, 9999, 990000, 990099, 999900, 999999 at n = 100 (both checked by a test). The ETL gets n from the drive: `etl/body.py` takes it from the manifest's `points_per_frame` (the integer cube root) and the cube size from the core config, until the generator adds body keys to the manifest. A timing check on 2026-10-24 showed `extract_keypoints` takes 0.045 s for 4 frames of 1,000,000 points (48 MB) on the development machine (Windows 11, 15.7 GB RAM).
 
-On 2026-10-23 these two modules had 71 tests (201 in the whole suite), and line coverage of the ETL package was 100%.
+#### Frame scan and rules (built)
+
+| Module | What it holds | Rules worth knowing |
+|---|---|---|
+| `etl/facts.py` | `scan_frames` | Streams `frames.parquet` in chunks and returns two things: one small record per row (frame number, timestamp, payload size, payload SHA-256, whether the cloud is valid, centroid) and the keypoints of every valid frame as a rows x keypoints x 3 array (NaN for an invalid frame). A bad payload never raises; a null frame number or timestamp, or a missing column, raises one `ValueError` (the caller checks the schema first). It never opens the ground-truth file. The size is checked before the payload is decoded. The deviation from the lattice is computed in int32 when that cannot overflow (int64 otherwise), the centroid is an exact integer sum divided by the point count, and the SHA-256 runs in a second thread; on a 200-frame drive of 100 points per axis this took 39 ms per frame against 94 to 100 ms for the earlier plain version (2.4 to 2.5 times faster; reading and decompressing the Parquet is about 25 ms of the 39). |
+| `etl/ingest.py` | `ingest_drive`, `IngestResult` | The entry point. Runs the gates, the scan, the rules and the three table swaps (next section). |
+| `etl/rules.py` | `RULES`, `RuleContext`, `run_rules` | Six rules with their codes, meaning, detection text and example fault. Drive rules (VL-005) and frame rules (VL-001 to VL-004, VL-006). VL-006 runs only on frames that passed the others. |
+| `etl/body.py` | `expected_frame_count` | The number of frames the scenario implies, used by VL-001. |
+
+On 2026-10-25 (ingest added) the ETL tests numbered 214 (481 in the whole suite, after the hostile-folder repair pass), and line coverage of the ETL package was 99% (`ingest.py` and `facts.py` 100%; the two uncovered lines are in `rules.py`). Ingesting the demo drive on a 1,000-point test body kept 1,000 of 1,000 frames and wrote 9,000 keypoint rows (checked by a test); each of the five frame faults gave exactly one quarantine row; a changed byte, a missing manifest, a schema-1 manifest, a renamed drive folder and a renamed points column each rejected the whole drive; ingesting twice left all three table files byte-identical.
+
+On 2026-10-24 the ETL package had 151 tests (381 in the whole suite), and line coverage of the ETL package was 99%. Running the rules on the demo drive (1,000 frames on a 125-point test body) gave no violations, and each of the six generator faults produced exactly its own code. The full-density behaviour of the scan is not measured yet.
+
+On 2026-10-23 the settings and keypoint modules had 71 tests (201 in the whole suite), and line coverage of the ETL package was 100%.
 
 What goes in: a drive folder `data/raw/<hash12>/` with the full point cloud (1,000 points per
 frame). What comes out: three tables in the lake, `keypoints`, `quarantine` and `lineage`, each
@@ -196,24 +230,44 @@ stored as `<table>/drive=<hash12>/part-0.parquet` and queryable with DuckDB.
 
 Steps for one drive:
 
-1. **Integrity gate.** Read the manifest and check every file hash, the schema version and the
-   folder name. Any failure rejects the whole drive before a frame is read.
-2. **Schema gate.** Compare the frames file's columns with the agreed frames schema (VL-005).
-3. **Scan, pass 1.** Read the frames file in chunks. For each frame keep a small record: frame
-   number, timestamp, payload size, payload hash, whether the points form the expected cube,
-   and the centroid. Memory stays small because only these records are kept.
-4. **Rules.** Run VL-001 to VL-004 on the records. Run VL-006 only on frames that passed those,
-   comparing each centroid with the last accepted frame.
-5. **Reduce, pass 2.** Read the file again, keep the accepted frames, and pick the 8 corners by
-   index plus the centroid.
-6. **Write.** Write each table's new partition aside, then swap it in for the old one.
+1. **Gates, cheapest first.** The folder name must be a valid drive id (otherwise `ingest_drive`
+   raises `ValueError` and writes nothing). Then: the manifest reads; the folder name equals the
+   first 12 hex of the scenario hash; the schema version is in the supported list; the fps divides
+   a second; the body and scenario are valid; `frames.parquet` is listed; and only then every file
+   hash is checked (`verify_drive`, the slow step). Any failure rejects the whole drive before a
+   frame is read. The frame rate and frame spacing come from the manifest, not from a core config.
+2. **Schema gate.** Open the frames file (an unreadable file rejects the drive), refuse any row
+   group above `max_row_group_mib` (uncompressed), and compare the columns with the agreed frames
+   schema (VL-005).
+3. **One scan.** Read the frames file once, in chunks. For each frame keep a small record: frame
+   number, timestamp, payload size, payload hash, whether the points form the expected cube, and
+   the centroid. For each valid frame the scan also picks the keypoints (8 corners by index and
+   the centroid) into a small array, so the file is not read a second time. A frame number outside
+   0 to expected count minus 1 rejects the drive. A scan that raises (null frame number,
+   mistyped column, unreadable Parquet) rejects the drive with one `INTEGRITY` row.
+4. **Rules.** Run VL-001 to VL-004 on the records. Run VL-006 only on frames that passed those.
+   VL-006 first picks a trusted starting frame: among the first three clean frames it takes the
+   pair that agrees most tightly (distance as a fraction of the allowed jump) and starts from the
+   earlier frame of that pair, so a teleported first frame cannot poison the rest. After that it
+   compares each centroid with the last accepted frame.
+5. **Reduce.** Keep the keypoint rows of the accepted frames (taken by file row, so a repeated
+   frame number cannot mix them up), sorted by frame number and then by the order in
+   `config/etl.yaml`, and write them as one batch. The file bytes therefore do not depend on the
+   chunk size.
+6. **Write.** Write each table's new partition aside, then swap it in for the old one, in this
+   order: keypoints, quarantine, lineage. Lineage goes last and acts as the commit marker. A
+   rejected drive drops its keypoints first, then writes its quarantine rows and a lineage row
+   with status `rejected` and zero counts. The lineage row holds the scenario hash, the schema
+   version, the counts and the manifest hashes of the frames and ground-truth files (taken from
+   the manifest after the files were verified; the ground-truth file is never opened). A keypoint
+   spec that does not fit the body is a configuration error: `ValueError`, nothing written.
 
 | Code | Rule in short |
 |---|---|
-| VL-001 | A frame number from 0 to frame_count-1 is absent. One row per missing number. |
+| VL-001 | A frame number from 0 to the expected count minus 1 is absent. One row per missing number. The expected count comes from the scenario stored in the manifest (its hash is verified), not from `manifest.frame_count`, which counts the rows of the file. |
 | VL-002 | The timestamp is not `frame_id x 62,500,000 ns`. |
 | VL-003 | A frame number appears twice. Identical copies keep the first. Differing copies are all quarantined. |
-| VL-004 | The payload is not 1,000 x 3 int32, or the points are not the expected lattice. |
+| VL-004 | The payload is not a multiple of 12 bytes, does not hold the drive's points per frame, or a point is more than rounding away from the expected lattice (per axis, the offsets from the lattice may spread by at most 1 cm). A single point moved by exactly 1 cm is not caught. |
 | VL-005 | The frames file's columns differ from the agreed schema. Rejects the drive. |
 | VL-006 | The centroid is farther from the last accepted frame than 9,000 cm/s allows (about 564.5 cm per frame, with a 2 cm margin). |
 
@@ -236,7 +290,7 @@ A scenario holds a start state (position in cm and speed in cm/s) and a list of 
 `move` changes the speed in a straight line to an end speed (a negative speed means backward).
 A `stop` holds speed 0 and is allowed only when the vehicle is already at rest, so speed never
 jumps. Durations are in seconds and must be a whole number of frames (a multiple of 1/16 s).
-A scenario may have at most 100,000 frames (about 1 h 44 min at 16 fps).
+A scenario may have at most 2,000 frames (125 s at 16 fps).
 
 From a scenario, `motion.py` builds, frame by frame:
 
@@ -246,12 +300,12 @@ From a scenario, `motion.py` builds, frame by frame:
 | Position | Forward Euler along x: `x[0]` is the start, `x[k+1] = x[k] + speed[k] / 16`. |
 | Ground-truth velocity | `(x[k+1] - x[k]) * 16`; the last frame repeats the previous value. |
 | Ground-truth acceleration | `(speed[k+1] - speed[k]) * 16` from the speed profile; the last frame repeats the previous value. |
-| Points | `place_body` returns `rint(lattice + [x, y, z])` as int32 cm. The lattice has 10 x 10 x 10 points on 0, 11, ... 99 cm, x-major, so the 8 corners are at indices 0, 9, 90, 99, 900, 909, 990, 999. |
+| Points | `place_body` returns `rint(lattice + [x, y, z])` as int32 cm. The lattice has 100 x 100 x 100 points on 0, 1, ... 99 cm, x-major, so the 8 corners are at indices 0, 99, 9,900, 9,999, 990,000, 990,099, 999,900, 999,999. |
 
-Real values for the demo scenario (run on 2026-10-23): 1,000 frames in 8 segments; speeds from
--300 to 600 cm/s; acceleration between -100 and 100 cm/s^2; final position 6,450.0 cm; scenario
-hash `c8f597af59a680681e1c36d760a325a699f20fed9e2a653de78a3b80d5bca5db`, so its drive folder
-is `c8f597af59a6`. A 1 cm move on x shifts every point by exactly (1, 0, 0) when positions are
+Real values for the demo scenario (run on 2026-10-24 at 1,000,000 points per frame): 1,000 frames in 8 segments; speeds from
+-300 to 600 cm/s; acceleration between -100 and 100 cm/s^2; final position 6,450.0 cm (run on 2026-10-23); drive
+hash `bf394b9bfb421fda860ab97fbab54d5c36c995a661e770969cbffd9a2afa95c1`, so its drive folder
+is `bf394b9bfb42`. A 1 cm move on x shifts every point by exactly (1, 0, 0) when positions are
 whole centimetres.
 
 ### Design choices and alternatives
@@ -260,7 +314,7 @@ whole centimetres.
 |---|---|---|---|---|
 | Motion model | Straight line along x, signed speed, no rotation | A cube's orientation cannot be read from its points | Planar motion, full rotation with a non-symmetric body | The real signal rotates |
 | Position estimate | Centroid of a frame's points | Exact for pure translation, needs no matching between frames | Tracking one reference point | Rotation or a changing point set |
-| Body | 1 m cube, 1,000-point lattice | Matches the assignment's example, small files | Car-sized box, full 1,000,000 points | Density or realism tests |
+| Body | 1 m cube, 100 x 100 x 100 = 1,000,000-point lattice | Matches the assignment's example density; the PDF allows fewer frames, not thinner ones | A 10 x 10 x 10 sample (the earlier choice), a car-sized box | Storage or time limits |
 | Source | Generator writes a drive to disk | Simplest valid source | A service or a stream | Many consumers or live data |
 | Config | YAML plus a validating Python loader | Readable, fails early on bad values | Environment variables only, JSON | Many deployment environments |
 | Scenario validation | pydantic | Typed models with clear errors | dataclasses plus hand checks | Never needed so far |
@@ -358,17 +412,21 @@ verified.
 
 ### Error handling
 
-Integrity errors (a changed, missing or extra file, an unreadable manifest, an unsupported schema
-version) reject the whole drive, as does VL-005. A rejected drive gets one drive-level quarantine
-row, a lineage row with status `rejected`, and no keypoints. Frame errors VL-001 to VL-004 and
+Integrity errors reject the whole drive, as does VL-005. They are: a changed, missing or extra
+file (one `INTEGRITY` row per problem), an unreadable manifest or a schema-1 manifest without a
+body, an unsupported schema version, a folder name that is not the first 12 hex of the scenario
+hash, an fps that does not divide a second, an invalid body or scenario, a frames file that is not
+listed or cannot be read, a Parquet row group above `max_row_group_mib`, and a frame number outside
+0 to expected count minus 1. A rejected drive gets its drive-level quarantine rows, a lineage row
+with status `rejected`, and no keypoints. A folder name that is not a valid drive id and a keypoint
+spec that does not fit the body raise `ValueError` and write nothing. Frame errors VL-001 to VL-004 and
 VL-006 send only the failed frame to quarantine. See [ERROR_CODES.md](#1-error-codes).
 
 ### Storage math
 
 A full-density frame is 100 x 100 x 100 = 1,000,000 points. At 3 coordinates of 4 bytes each
 that is 12 MB per frame, 192 MB per second at 16 fps, and about 691 GB per hour (computed). The
-sample here is 1,000 points, 12 kB per frame and 12 MB for a 1,000-frame drive before
-compression (computed). A production design would store a keyframe and the ego-motion change
+1,000-frame demo is therefore 12 GB before compression (computed) and 287,134,433 bytes on disk with zstd (measured), about 42 times smaller (computed). A production design would store a keyframe and the ego-motion change
 per frame instead of every point.
 
 ### Scaling to production
@@ -444,21 +502,21 @@ It prints:
 ```text
 frames: 1000
 timestamp_spacing_ns: 62500000
-points_per_frame: 1000
-scenario_hash: c8f597af59a680681e1c36d760a325a699f20fed9e2a653de78a3b80d5bca5db
-drive_dir: data\raw\c8f597af59a6
+points_per_frame: 1000000
+scenario_hash: bf394b9bfb421fda860ab97fbab54d5c36c995a661e770969cbffd9a2afa95c1
+drive_dir: data\raw\bf394b9bfb42
 manifest: verified
 ```
 
-The folder `data/raw/c8f597af59a6/` then holds `frames.parquet` (3,196,692 bytes),
-`ground_truth.parquet` (18,133 bytes) and `manifest.json` (1,385 bytes). `--out` is optional; without
+The folder `data/raw/bf394b9bfb42/` then holds `frames.parquet` (287,134,433 bytes, zstd),
+`ground_truth.parquet` (30,929 bytes) and `manifest.json` (1,454 bytes). The run (2026-10-24, Python 3.12.6, pyarrow 26.0.0, numpy 2.5.4) took 81 s including verification; the 1,000-frame drive holds 12 GB of points before compression. `--out` is optional; without
 it the drive goes to `raw_dir` from `config/default.yaml` (or `VL_RAW_DIR`). Generating the same
 scenario again replaces the folder with identical files.
 
 Check a drive against its manifest:
 
 ```powershell
-python -m vl_data verify data/raw/c8f597af59a6
+python -m vl_data verify data/raw/bf394b9bfb42
 ```
 
 This prints `manifest: verified` and exits with code 0. After one byte of `ground_truth.parquet`
@@ -511,6 +569,31 @@ Speeds are cm/s and positive means forward. `move` changes speed in a straight l
 current speed to `end_speed_cm_s`. Durations must be a whole number of frames (a multiple of
 1/16 s).
 
+Generate a drive from the browser (the Generate tab). Run on 2026-10-25 (Windows, Python 3.12.6,
+Streamlit 1.66.1); only the server start and an HTTP check were run, the page was not opened in a
+browser by hand:
+
+```powershell
+python -m streamlit run src/vl_data/generator/ui/generate_app.py --server.headless true --server.address 127.0.0.1 --server.port 8765
+```
+
+`--server.address 127.0.0.1` binds the page to this computer only; `--server.port 8765` is the port
+that run used. Streamlit printed `Uvicorn server started on 127.0.0.1:8765` and `URL: http://127.0.0.1:8765`;
+the page answered with HTTP 200 and `/_stcore/health` answered `ok` (measured, log
+`.claude/run-proofs/TASK-7-iter3-server.log`, local, git-ignored, A28). The page has a
+start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`, `seed`; this description of the page comes from the code, not from a browser run), a segment table that starts with the
+demo rows (`type`, `duration_s` in steps of 0.0625 s, `end_speed_cm_s`; rows can be added and
+deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first shows
+a warning such as "This drive has 1000 frames, about 12,000,000,000 bytes (uncompressed point
+data)" (1,000 frames x 12,000,000 bytes at full density, computed; about 12,000 bytes per frame, 12,000,000 bytes for 1,000 frames, at the
+10-points-per-axis test body, computed). It then writes the drive under `raw_dir` with the same function
+the `generate` command uses, and shows the folder, the scenario hash and the frame count. A
+wrong table (a blank cell, a duration that is not a whole number of frames, over 2,000 frames)
+shows a red error and no plot. The tab is tested with Streamlit's test runner
+(`tests/generator/test_ui.py`, 21 tests and 6.09 s, measured in
+`.claude/run-proofs/TASK-7-iter3-ui-tests.log`; the whole suite was 284 tests, 100.00% coverage, measured in `TASK-7-iter3-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
+by hand is not covered by a test.
+
 Load the drive into the lake (planned, not yet run):
 
 ```powershell
@@ -530,7 +613,8 @@ exist.
 ### Known issues
 
 - No rotation. The vehicle never turns or yaws. A real vehicle rotates.
-- The point cloud is a 1,000-point sample, not the full 1,000,000 points.
+- A drive at full density is large: 12 GB of points per 1,000 frames before compression (about 287 MB on disk with zstd), and generating or checking it takes more than a minute. `generate()` and `write_drive` hold a whole drive in memory; use the `generate` command (it streams). A drive over 1 GiB of points (more than 89 frames at full density) is refused by `generate()` and `write_drive`.
+- A scenario may have at most 2,000 frames (125 s at 16 fps). At full density that is about 0.6 GB on disk and about 2.5 minutes to generate (scaled from the 1,000-frame run, not run). The cap is a validation limit in `generator.models`.
 - Motion is one-dimensional (along x).
 - Values are rounded to whole centimetres, which adds small errors. Per-frame acceleration is too
   noisy to use directly, so it is fitted over windows.
@@ -544,10 +628,16 @@ exist.
   as one atomic step. A crash in between is repaired by loading the drive again.
 - The lake is single-writer: load one drive at a time. A failed partition restore leaves the old
   data in `_swap/old-<id>` for you to recover by hand; it is never deleted automatically.
-- The loader reads each drive twice, in chunks. It is built for one machine, not for a stream.
+- The loader reads the frames file from disk twice: `verify_drive` hashes it once, then the scan reads it once more, in chunks (the ground-truth file is hashed once and never parsed). It is built for one machine, not for a stream. Measured peak memory was about 1.7 to 1.9 GiB at full density, while one Parquet row group is about 600 MB uncompressed (50 frames); the chunk size does not bound it. A drive with a row group above 2,048 MiB (`max_row_group_mib`) is rejected.
+- Measured on 2026-10-25 (one machine, demo drive `bf394b9bfb42`, 1,000 frames x 1,000,000 points, row groups of 50 frames): the latest run took 44.7 s for the first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB (`.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and 1,718 MiB (`TASK-4-measure.log`). One first run (`TASK-4-measure-iter2.log`) took 3,730 s while its CPU time was only about 54 s; the cause is unknown and it was not reproduced, so it is an open outlier (the next full-density run should log free memory and disk). The frame scan alone took 91 s and 1.59 GiB before the speed-up, and about 39 s per 1,000 frames (2.4 times faster) on a 200-frame benchmark after it.
+- A drive folder is treated as hostile: a manifest above 2,000,000 points per frame (`max_points_per_frame`), a Parquet footer claiming more than 2 x expected frames + 1,000 rows, or a malformed `scenario_hash` is rejected with `INTEGRITY` before anything large is allocated, and at most 20 problems (plus one "and K more" row) are stored per drive. The row-group size check trusts the footer, so a compression bomb is a known gap.
+- `frames_rejected` counts quarantine rows that name a file row, so a frame that breaks two rules counts twice; `frames_in` is not always `frames_kept + frames_rejected`. The ingest assumes the drive folder does not change while it runs.
+- A drive whose frames file cannot be read, whose manifest cannot be read, or whose folder name is not its scenario hash is rejected with the code `INTEGRITY`, not with one of the six VL codes.
 - The loader's speed limit (9,000 cm/s) is a Tesla's top speed of 322 km/h rounded up and is set in
   a YAML file. A faster vehicle would be flagged as impossible motion.
 - Per-frame acceleration is not checked by any loader rule.
+- The point-cloud check (VL-004) allows for the 1 cm rounding wobble of whole-centimetre points. A single point moved by exactly 1 cm is not detected; a move of 2 cm or more is.
+- The loader decides which frame is a teleport by comparing positions. If the first three clean frames of a drive are themselves inconsistent, the loader trusts the most tightly agreeing pair; a drive that starts with several bad frames may be judged wrongly.
 - Single machine, CPU only.
 
 ### Coming soon

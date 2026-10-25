@@ -6,7 +6,7 @@ import numpy as np
 import pyarrow as pa
 from numpy.typing import NDArray
 
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 
 # One row per frame; points is the encode_points bytes of that frame.
 FRAMES_SCHEMA: pa.Schema = pa.schema(
@@ -24,7 +24,8 @@ GROUND_TRUTH_SCHEMA: pa.Schema = pa.schema(
     ]
 )
 
-_BYTES_PER_POINT = 12  # three little-endian int32 values
+BYTES_PER_POINT = 12  # bytes per point: three little-endian int32 values (cm)
+ARROW_BINARY_LIMIT = 2**31  # bytes: offsets of an Arrow binary array are int32
 
 
 def encode_points(points: NDArray[np.int32]) -> bytes:
@@ -50,7 +51,7 @@ def decode_points(buf: bytes) -> NDArray[np.int32]:
     Raises ValueError if len(buf) is not a multiple of 12. Checking n against the
     expected points per frame is the caller's job.
     """
-    if len(buf) % _BYTES_PER_POINT != 0:
+    if len(buf) % BYTES_PER_POINT != 0:
         raise ValueError(f"buffer length {len(buf)} is not a multiple of 12 bytes")
     arr = np.frombuffer(buf, dtype="<i4").reshape(-1, 3)
     return arr.astype(np.int32)

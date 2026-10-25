@@ -9,12 +9,12 @@ continue through the pipeline.
 
 | Code | Name | What it means | How it is detected | Example fault used in tests |
 |---|---|---|---|---|
-| VL-001 | Missing frame | A frame number is absent from the sequence. | A number from 0 to `frame_count - 1` (from the manifest) has no row. One quarantine row per missing number. | `DropFrame(frame_id)` |
+| VL-001 | Missing frame | A frame number is absent from the sequence. | A number from 0 to the expected frame count minus 1 has no row. The expected count comes from the scenario in the manifest, not from `manifest.frame_count`. One quarantine row per missing number. | `DropFrame(frame_id)` |
 | VL-002 | Timestamp gap | A frame's timestamp is not what its frame number implies. | The timestamp is not `frame_id x 62,500,000 ns`. | `ShiftTimestamp(frame_id, delta_ns)` |
 | VL-003 | Duplicate frame | The same frame number appears more than once. | A repeated `frame_id`. Identical copies keep the first and quarantine the repeats; differing copies are all quarantined. | `DuplicateFrame(frame_id)` |
-| VL-004 | Corrupt point cloud | A frame's points are not a valid 1,000-point cube. | The payload is not 1,000 x 3 int32, or the points do not match the expected lattice. | `CorruptPoints(frame_id)` |
+| VL-004 | Corrupt point cloud | A frame's points are not a valid 1,000-point cube. | The payload is not a multiple of 12 bytes, does not hold the drive's points per frame (12,000,000 bytes at the shipped density), or a point is more than rounding away from the expected lattice (per axis the offsets may spread by at most 1 cm). | `CorruptPoints(frame_id)` |
 | VL-005 | Schema mismatch | The table does not have the expected columns and types. | The schema differs from the frames schema. Rejects the whole drive. | `BreakSchema()` |
-| VL-006 | Impossible motion | The distance moved between two frames is beyond what the vehicle can do. | The centroid is farther from the last accepted frame than the configured maximum speed allows (scaled by the frame gap, plus a rounding margin). Acceleration is not tested. | `Teleport(frame_id, dx_cm)` |
+| VL-006 | Impossible motion | The distance moved between two frames is beyond what the vehicle can do. | The centroid is farther from the last accepted frame than the configured maximum speed allows (scaled by the frame gap, plus a rounding margin). The starting frame is the earlier frame of the most tightly agreeing pair among the first three clean frames. Acceleration is not tested. | `Teleport(frame_id, dx_cm)` |
 
 ## Integrity errors (outside the VL codes)
 

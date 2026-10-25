@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 FRAMES_PER_SECOND = 16  # frame rate of the assignment, frames/s
 _FRAME_TOLERANCE = 1e-9  # frames; slack when checking duration * fps against an integer
-MAX_FRAMES = 100_000  # frames; cap per scenario, about 1 h 44 min at 16 frames/s
+MAX_FRAMES = 2_000  # frames; cap per scenario, 2,000 frames = 125 s at 16 frames/s
 
 _Cm = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 _CmPerS = Annotated[float, Field(strict=True, allow_inf_nan=False)]

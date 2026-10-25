@@ -26,7 +26,7 @@ def test_defaults_load() -> None:
     assert config.frame_interval_ns == 62_500_000
     assert config.raw_dir == Path("data/raw")
     assert config.body.size_cm == 100
-    assert config.body.points_per_axis == 10
+    assert config.body.points_per_axis == 100
     assert config.tolerances.velocity_cm_s == 17.0
     assert config.fit.penalty == 40.0
     # The shipped default.yaml and the model defaults must agree.
@@ -98,3 +98,16 @@ def test_default_file_missing_gives_defaults(
 
 def test_frame_interval_for_other_fps() -> None:
     assert Config(fps=10).frame_interval_ns == 100_000_000
+
+
+def test_body_config_bounds_match_the_manifest() -> None:
+    """BodyConfig rejects what BodyInfo would reject later; the limits themselves are accepted."""
+    from vl_data.core.config import BodyConfig
+
+    assert BodyConfig(size_cm=2_147_483_647, points_per_axis=1_000_000).size_cm == 2_147_483_647
+    with pytest.raises(ValidationError):
+        BodyConfig(size_cm=2_147_483_648, points_per_axis=10)
+    with pytest.raises(ValidationError):
+        BodyConfig(size_cm=100, points_per_axis=1_000_001)
+    with pytest.raises(ValidationError):
+        Config.model_validate({"body": {"size_cm": 100, "points_per_axis": 10**9}})

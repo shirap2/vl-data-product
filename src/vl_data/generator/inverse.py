@@ -1,14 +1,17 @@
 """Inverse of the generator. Units: cm, cm/s, s; fps in frames/s; boundaries in frames."""
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
 from numpy.typing import NDArray
 
 from vl_data.core.config import Config, FitConfig, ToleranceConfig
-from vl_data.core.schemas import decode_points
+from vl_data.core.schemas import BYTES_PER_POINT
 from vl_data.generator.body import cube_lattice
+from vl_data.generator.drive import check_batch_fits
 from vl_data.generator.models import MoveSegment, Scenario, Segment, StopSegment
 
 _DECIMALS = 2  # speeds are rounded to 0.01 cm/s so that "exactly 0" is well defined
@@ -23,6 +26,8 @@ class Track:
 
     x_cm: NDArray[np.float64]  # body origin x per frame, cm
     velocity_cm_s: NDArray[np.float64]  # forward difference, cm/s, length n - 1
+    y_cm: NDArray[np.float64]  # body origin y per frame, cm
+    z_cm: NDArray[np.float64]  # body origin z per frame, cm
 
 
 @dataclass(frozen=True)
@@ -46,28 +51,73 @@ class _Piece:
     end_cm_s: float
 
 
-def infer_track(frames: pa.Table, config: Config) -> Track:
-    """Recover body x (cm) and velocity (cm/s) from the frames alone (no ground truth).
+def _points_arrays(frames: pa.Table | Iterable[pa.RecordBatch]) -> Iterator[pa.Array]:
+    """Yield the chunks of the points column of a table, or of each record batch.
 
-    x is the mean x of a frame's points minus the lattice centre x, so it is the body
-    origin x in cm, the same reference as the generator's x. Velocity is the forward
-    difference of x times fps (frames/s), length n - 1. Tables of several chunks are
-    handled. Raises ValueError for no frames or a frame with no points.
+    Each yielded array holds one frame per entry (12 bytes per point, int32 cm). Raises
+    ValueError if the column is missing or its type is not binary or large_binary.
     """
-    lattice_centre_x = float(
-        cube_lattice(config.body.size_cm, config.body.points_per_axis)[:, 0].mean()
-    )  # cm
-    centroid_x: list[float] = []  # cm
-    for chunk in frames.column("points").chunks:
-        for buf in chunk.to_pylist():
-            points = decode_points(buf)
-            if len(points) == 0:
+    if isinstance(frames, pa.Table):
+        if "points" not in frames.column_names:
+            raise ValueError("the table has no points column")
+        for chunk in frames.column("points").chunks:
+            _check_binary(chunk)
+            yield chunk
+        return
+    for batch in frames:
+        if "points" not in batch.schema.names:
+            raise ValueError("the batch has no points column")
+        column = batch.column(batch.schema.get_field_index("points"))
+        _check_binary(column)
+        yield column
+
+
+def _check_binary(array: pa.Array) -> None:
+    if not (pa.types.is_binary(array.type) or pa.types.is_large_binary(array.type)):
+        raise ValueError(f"the points column must be binary or large_binary, not {array.type}")
+
+
+def infer_track(frames: pa.Table | Iterable[pa.RecordBatch], config: Config) -> Track:
+    """Recover body x, y, z (cm) and x velocity (cm/s) from the frames alone (no ground truth).
+
+    Each coordinate is the mean of a frame's points minus the lattice centre, so it is the body
+    origin in cm, the same reference as the generator's position. Velocity is the forward
+    difference of x times fps (frames/s), length n - 1. frames is a table (any chunks) or an
+    iterable of record batches; frames are read one row at a time, never as a whole chunk.
+    Raises ValueError for no frames, a missing points column, a null points entry, a frame
+    with no points, or a frame whose point count is not points_per_axis cubed, and also for a
+    config whose frames would be too large for one Arrow binary array (checked first, so a huge
+    points_per_axis cannot run out of memory).
+    """
+    check_batch_fits(config)  # before the lattice: a frame too big for Arrow cannot exist
+    lattice = cube_lattice(config.body.size_cm, config.body.points_per_axis)
+    centre = lattice.mean(axis=0, dtype=np.float64)  # cm, (x, y, z)
+    expected = len(lattice)  # points per frame
+    centroids: list[Any] = []  # cm, one (x, y, z) per frame
+    for array in _points_arrays(frames):
+        for i in range(len(array)):
+            value = array[i]
+            if not value.is_valid:
+                raise ValueError(f"frame {len(centroids)} has a null points entry")
+            buf = value.as_buffer()
+            if buf.size == 0:
                 raise ValueError("a frame has no points")
-            centroid_x.append(float(points[:, 0].mean()))
-    if not centroid_x:
+            if buf.size != expected * BYTES_PER_POINT:
+                raise ValueError(
+                    f"frame {len(centroids)} has {buf.size} bytes of points, expected "
+                    f"{expected} points ({expected * BYTES_PER_POINT} bytes)"
+                )
+            points = np.frombuffer(buf, dtype="<i4").reshape(-1, 3)
+            centroids.append(points.mean(axis=0, dtype=np.float64))
+    if not centroids:
         raise ValueError("the table has no frames")
-    x_cm = np.asarray(centroid_x, dtype=np.float64) - lattice_centre_x
-    return Track(x_cm=x_cm, velocity_cm_s=np.diff(x_cm) * config.fps)
+    xyz = np.asarray(centroids, dtype=np.float64) - centre
+    return Track(
+        x_cm=xyz[:, 0].copy(),
+        velocity_cm_s=np.diff(xyz[:, 0]) * config.fps,
+        y_cm=xyz[:, 1].copy(),
+        z_cm=xyz[:, 2].copy(),
+    )
 
 
 def _prefix(values: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -202,11 +252,12 @@ def fit_segments(track: Track, fit: FitConfig, fps: int) -> list[Segment]:
     return _fit(track, fit, fps)[1]
 
 
-def infer_scenario(frames: pa.Table, config: Config) -> Scenario:
+def infer_scenario(frames: pa.Table | Iterable[pa.RecordBatch], config: Config) -> Scenario:
     """infer_track then fit_segments, rebuilt as a Scenario (seed 0).
 
-    Start: x = rounded centroid x of frame 0 (cm), y = z = 0 cm, speed = the first
-    piece's start speed (cm/s) after the snap rule (0 for a first stop).
+    Start: x, y and z = the recovered body origin of frame 0, rounded to whole cm (so the
+    original start is recovered when it was in whole cm), speed = the first piece's start
+    speed (cm/s) after the snap rule (0 for a first stop).
     """
     track = infer_track(frames, config)
     start_speed, segments = _fit(track, config.fit, config.fps)
@@ -215,8 +266,8 @@ def infer_scenario(frames: pa.Table, config: Config) -> Scenario:
             "seed": 0,
             "start": {
                 "x_cm": float(round(track.x_cm[0])),
-                "y_cm": 0.0,
-                "z_cm": 0.0,
+                "y_cm": float(round(track.y_cm[0])),
+                "z_cm": float(round(track.z_cm[0])),
                 "speed_cm_s": start_speed,
             },
             "segments": [s.model_dump() for s in segments],

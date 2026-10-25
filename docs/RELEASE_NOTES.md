@@ -50,21 +50,21 @@ It prints:
 ```text
 frames: 1000
 timestamp_spacing_ns: 62500000
-points_per_frame: 1000
-scenario_hash: c8f597af59a680681e1c36d760a325a699f20fed9e2a653de78a3b80d5bca5db
-drive_dir: data\raw\c8f597af59a6
+points_per_frame: 1000000
+scenario_hash: bf394b9bfb421fda860ab97fbab54d5c36c995a661e770969cbffd9a2afa95c1
+drive_dir: data\raw\bf394b9bfb42
 manifest: verified
 ```
 
-The folder `data/raw/c8f597af59a6/` then holds `frames.parquet` (3,196,692 bytes),
-`ground_truth.parquet` (18,133 bytes) and `manifest.json` (1,385 bytes). `--out` is optional; without
+The folder `data/raw/bf394b9bfb42/` then holds `frames.parquet` (287,134,433 bytes, zstd),
+`ground_truth.parquet` (30,929 bytes) and `manifest.json` (1,454 bytes). The run (2026-10-24, Python 3.12.6, pyarrow 26.0.0, numpy 2.5.4) took 81 s including verification; the 1,000-frame drive holds 12 GB of points before compression. `--out` is optional; without
 it the drive goes to `raw_dir` from `config/default.yaml` (or `VL_RAW_DIR`). Generating the same
 scenario again replaces the folder with identical files.
 
 Check a drive against its manifest:
 
 ```powershell
-python -m vl_data verify data/raw/c8f597af59a6
+python -m vl_data verify data/raw/bf394b9bfb42
 ```
 
 This prints `manifest: verified` and exits with code 0. After one byte of `ground_truth.parquet`
@@ -117,6 +117,31 @@ Speeds are cm/s and positive means forward. `move` changes speed in a straight l
 current speed to `end_speed_cm_s`. Durations must be a whole number of frames (a multiple of
 1/16 s).
 
+Generate a drive from the browser (the Generate tab). Run on 2026-10-25 (Windows, Python 3.12.6,
+Streamlit 1.66.1); only the server start and an HTTP check were run, the page was not opened in a
+browser by hand:
+
+```powershell
+python -m streamlit run src/vl_data/generator/ui/generate_app.py --server.headless true --server.address 127.0.0.1 --server.port 8765
+```
+
+`--server.address 127.0.0.1` binds the page to this computer only; `--server.port 8765` is the port
+that run used. Streamlit printed `Uvicorn server started on 127.0.0.1:8765` and `URL: http://127.0.0.1:8765`;
+the page answered with HTTP 200 and `/_stcore/health` answered `ok` (measured, log
+`.claude/run-proofs/TASK-7-iter3-server.log`, local, git-ignored, A28). The page has a
+start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`, `seed`; this description of the page comes from the code, not from a browser run), a segment table that starts with the
+demo rows (`type`, `duration_s` in steps of 0.0625 s, `end_speed_cm_s`; rows can be added and
+deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first shows
+a warning such as "This drive has 1000 frames, about 12,000,000,000 bytes (uncompressed point
+data)" (1,000 frames x 12,000,000 bytes at full density, computed; about 12,000 bytes per frame, 12,000,000 bytes for 1,000 frames, at the
+10-points-per-axis test body, computed). It then writes the drive under `raw_dir` with the same function
+the `generate` command uses, and shows the folder, the scenario hash and the frame count. A
+wrong table (a blank cell, a duration that is not a whole number of frames, over 2,000 frames)
+shows a red error and no plot. The tab is tested with Streamlit's test runner
+(`tests/generator/test_ui.py`, 21 tests and 6.09 s, measured in
+`.claude/run-proofs/TASK-7-iter3-ui-tests.log`; the whole suite was 284 tests, 100.00% coverage, measured in `TASK-7-iter3-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
+by hand is not covered by a test.
+
 Load the drive into the lake (planned, not yet run):
 
 ```powershell
@@ -136,7 +161,8 @@ exist.
 ## Known issues
 
 - No rotation. The vehicle never turns or yaws. A real vehicle rotates.
-- The point cloud is a 1,000-point sample, not the full 1,000,000 points.
+- A drive at full density is large: 12 GB of points per 1,000 frames before compression (about 287 MB on disk with zstd), and generating or checking it takes more than a minute. `generate()` and `write_drive` hold a whole drive in memory; use the `generate` command (it streams). A drive over 1 GiB of points (more than 89 frames at full density) is refused by `generate()` and `write_drive`.
+- A scenario may have at most 2,000 frames (125 s at 16 fps). At full density that is about 0.6 GB on disk and about 2.5 minutes to generate (scaled from the 1,000-frame run, not run). The cap is a validation limit in `generator.models`.
 - Motion is one-dimensional (along x).
 - Values are rounded to whole centimetres, which adds small errors. Per-frame acceleration is too
   noisy to use directly, so it is fitted over windows.
@@ -150,10 +176,16 @@ exist.
   as one atomic step. A crash in between is repaired by loading the drive again.
 - The lake is single-writer: load one drive at a time. A failed partition restore leaves the old
   data in `_swap/old-<id>` for you to recover by hand; it is never deleted automatically.
-- The loader reads each drive twice, in chunks. It is built for one machine, not for a stream.
+- The loader reads the frames file from disk twice: `verify_drive` hashes it once, then the scan reads it once more, in chunks (the ground-truth file is hashed once and never parsed). It is built for one machine, not for a stream. Measured peak memory was about 1.7 to 1.9 GiB at full density, while one Parquet row group is about 600 MB uncompressed (50 frames); the chunk size does not bound it. A drive with a row group above 2,048 MiB (`max_row_group_mib`) is rejected.
+- Measured on 2026-10-25 (one machine, demo drive `bf394b9bfb42`, 1,000 frames x 1,000,000 points, row groups of 50 frames): the latest run took 44.7 s for the first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB (`.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and 1,718 MiB (`TASK-4-measure.log`). One first run (`TASK-4-measure-iter2.log`) took 3,730 s while its CPU time was only about 54 s; the cause is unknown and it was not reproduced, so it is an open outlier (the next full-density run should log free memory and disk). The frame scan alone took 91 s and 1.59 GiB before the speed-up, and about 39 s per 1,000 frames (2.4 times faster) on a 200-frame benchmark after it.
+- A drive folder is treated as hostile: a manifest above 2,000,000 points per frame (`max_points_per_frame`), a Parquet footer claiming more than 2 x expected frames + 1,000 rows, or a malformed `scenario_hash` is rejected with `INTEGRITY` before anything large is allocated, and at most 20 problems (plus one "and K more" row) are stored per drive. The row-group size check trusts the footer, so a compression bomb is a known gap.
+- `frames_rejected` counts quarantine rows that name a file row, so a frame that breaks two rules counts twice; `frames_in` is not always `frames_kept + frames_rejected`. The ingest assumes the drive folder does not change while it runs.
+- A drive whose frames file cannot be read, whose manifest cannot be read, or whose folder name is not its scenario hash is rejected with the code `INTEGRITY`, not with one of the six VL codes.
 - The loader's speed limit (9,000 cm/s) is a Tesla's top speed of 322 km/h rounded up and is set in
   a YAML file. A faster vehicle would be flagged as impossible motion.
 - Per-frame acceleration is not checked by any loader rule.
+- The point-cloud check (VL-004) allows for the 1 cm rounding wobble of whole-centimetre points. A single point moved by exactly 1 cm is not detected; a move of 2 cm or more is.
+- The loader decides which frame is a teleport by comparing positions. If the first three clean frames of a drive are themselves inconsistent, the loader trusts the most tightly agreeing pair; a drive that starts with several bad frames may be judged wrongly.
 - Single machine, CPU only.
 
 ## Coming soon

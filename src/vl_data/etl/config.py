@@ -51,6 +51,18 @@ class LimitsConfig(BaseModel):
     max_speed_cm_s: float = Field(default=9000.0, gt=0, le=100_000, allow_inf_nan=False)  # cm/s
     rounding_margin_cm: float = Field(default=2.0, ge=0, allow_inf_nan=False)  # cm
 
+    def max_jump_cm(self, fps: int, frame_gap: int) -> float:
+        """Largest plausible keypoint move in cm across frame_gap frames at fps frames/s.
+
+        max_speed_cm_s * frame_gap / fps + rounding_margin_cm (margin added once).
+        Raises ValueError if fps < 1 or frame_gap < 1.
+        """
+        if fps < 1:
+            raise ValueError(f"fps must be at least 1, got {fps}")
+        if frame_gap < 1:
+            raise ValueError(f"frame_gap must be at least 1, got {frame_gap}")
+        return self.max_speed_cm_s * frame_gap / fps + self.rounding_margin_cm
+
 
 def _default_keypoints() -> list[KeypointSpec]:
     """The eight lattice corners (binary x, y, z) and the centroid."""
@@ -69,10 +81,17 @@ class EtlConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     supported_schema_versions: list[StrictInt] = Field(
-        default=[1], min_length=1, max_length=16
+        default=[2], min_length=1, max_length=16
     )  # raw schema versions the loader accepts
-    # MiB of raw int32 xyz data per chunk; peak memory is about 2-3x this (payload + decoded copy)
+    # MiB of raw int32 xyz data per chunk (the batch size asked of Parquet). It does not bound
+    # memory: pyarrow reads a whole row group, see max_row_group_mib.
     chunk_mib: int = Field(default=128, ge=1, le=1024)
+    # Largest uncompressed Parquet row group (MiB) the loader will read. pyarrow reads a whole
+    # row group, so peak memory is about one row group plus one frame, not chunk_mib.
+    max_row_group_mib: int = Field(default=2048, ge=1)
+    # Largest points_per_frame (points) the loader accepts from a manifest. The manifest is not
+    # trusted until verify_drive has passed, so this bounds the lattice and keypoint-spec checks.
+    max_points_per_frame: int = Field(default=2_000_000, ge=1)
     lake_dir: Path = Path("warehouse")  # lake root
     limits: LimitsConfig = LimitsConfig()
     keypoints: list[KeypointSpec] = Field(
@@ -101,14 +120,9 @@ class EtlConfig(BaseModel):
     def max_jump_cm(self, fps: int, frame_gap: int) -> float:
         """Largest plausible keypoint move in cm across frame_gap frames at fps frames/s.
 
-        max_speed_cm_s * frame_gap / fps + rounding_margin_cm (margin added once).
-        Raises ValueError if fps < 1 or frame_gap < 1.
+        Delegates to LimitsConfig.max_jump_cm. Raises ValueError if fps < 1 or frame_gap < 1.
         """
-        if fps < 1:
-            raise ValueError(f"fps must be at least 1, got {fps}")
-        if frame_gap < 1:
-            raise ValueError(f"frame_gap must be at least 1, got {frame_gap}")
-        return self.limits.max_speed_cm_s * frame_gap / fps + self.limits.rounding_margin_cm
+        return self.limits.max_jump_cm(fps, frame_gap)
 
 
 def load_etl_config(path: Path | None = None) -> EtlConfig:

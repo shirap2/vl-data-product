@@ -21,8 +21,11 @@ class BodyConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    size_cm: int = Field(default=100, gt=0)  # cube edge, cm
-    points_per_axis: int = Field(default=10, ge=2)  # lattice points per axis
+    # The upper bounds mirror BodyInfo in the manifest (core.manifest): size_cm up to the int32
+    # range (cm), points_per_axis up to 1,000,000 (count). cube_lattice still refuses a
+    # points_per_axis above size_cm and a frame of 2**31 bytes or more (A65).
+    size_cm: int = Field(default=100, gt=0, le=2_147_483_647)  # cube edge, cm
+    points_per_axis: int = Field(default=100, ge=2, le=1_000_000)  # lattice points per axis
 
 
 class ToleranceConfig(BaseModel):
