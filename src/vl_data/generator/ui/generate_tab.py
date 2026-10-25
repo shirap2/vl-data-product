@@ -123,19 +123,23 @@ def _verified_manifest(drive_dir: Path, expected_hash: str) -> Manifest | None:
     """The manifest of drive_dir if it is a folder that passes verify_drive and has this hash.
 
     The check runs inside an st.status block because verify_drive re-hashes every file (it
-    can take seconds at full density). Returns None if the folder is missing, not a folder,
-    unreadable, fails verification or holds another hash; the caller then writes normally.
+    can take a while for a large drive). Returns None if the path is missing, a symlink (the
+    writer refuses those, so its error is shown), not a folder, unreadable, fails verification
+    or holds another hash; the caller then writes normally.
     """
-    if not drive_dir.is_dir():
-        return None
     manifest: Manifest | None = None
+    try:
+        if drive_dir.is_symlink() or not drive_dir.is_dir():
+            return None
+    except OSError:
+        return None
     with st.status("Checking existing drive...", expanded=True) as status:
         try:
             if verify_drive(drive_dir).ok:
                 found = read_manifest(drive_dir)
                 if found.scenario_hash == expected_hash:
                     manifest = found
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             manifest = None
         if manifest is None:
             status.update(label="Existing drive is not usable; writing again", state="error")
@@ -152,14 +156,9 @@ def _show_drive(drive_dir: Path, manifest: Manifest) -> None:
 
 
 def _generate(scenario: Scenario, config: Config) -> None:
-    """Skip, refuse, or write the drive for `scenario`, and show the outcome.
+    """Skip, refuse or write the drive for `scenario` and show the outcome with st.
 
-    Order: the batch-size check, the target folder (config.raw_dir / first 12 hash characters),
-    then, if that folder already holds a drive that passes verify_drive with this hash, report
-    "already generated" and stop. Otherwise the disk guard refuses when frames x bytes per
-    frame (bytes, an uncompressed upper bound; nothing is credited back for an existing
-    folder) is over the free bytes on the raw_dir disk. Otherwise show the size warning and
-    write inside a status block. Errors are shown with st.error; nothing here raises.
+    Sizes are in bytes (frames x bytes per frame, an uncompressed upper bound); fps is in frames/s.
     """
     try:
         frame_bytes = check_batch_fits(config)  # bytes per frame

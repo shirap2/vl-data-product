@@ -1,7 +1,9 @@
 """Tests for the Generate tab. Units: cm, cm/s, s, bytes. Drives go to tmp_path only."""
 
 import math
+import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -11,6 +13,7 @@ from typer.testing import CliRunner
 
 from vl_data.cli import app as cli_app
 from vl_data.core.config import Config, load_config
+from vl_data.core.hashing import scenario_hash
 from vl_data.core.manifest import VerifyResult, read_manifest, verify_drive
 from vl_data.generator import generate_to_disk
 from vl_data.generator.models import MoveSegment, Scenario, StopSegment, load_scenario
@@ -112,11 +115,11 @@ def test_rows_to_scenario_rejects_blank_start() -> None:
 
 
 @pytest.mark.parametrize("seed", [None, math.nan, math.inf, [1], {"a": 1}])
-def test_rows_to_scenario_rejects_bad_seed(seed: object) -> None:
+def test_rows_to_scenario_rejects_bad_seed(seed: Any) -> None:
     """A cleared seed box (None), NaN or inf is a ValueError naming the seed, never TypeError."""
     rows = [{"type": "stop", "duration_s": 1.0}]
     with pytest.raises(ValueError, match="seed"):
-        rows_to_scenario(START, rows, seed)  # type: ignore[arg-type]
+        rows_to_scenario(START, rows, seed)
 
 
 def test_rows_to_scenario_accepts_numpy_numbers() -> None:
@@ -125,7 +128,8 @@ def test_rows_to_scenario_accepts_numpy_numbers() -> None:
         {"type": "move", "duration_s": np.float64(2.0), "end_speed_cm_s": np.float32(100.0)},
     ]
     start = {k: np.float64(v) for k, v in START.items()}
-    scenario = rows_to_scenario(start, rows, np.int64(7))  # type: ignore[arg-type]
+    seed: Any = np.int64(7)
+    scenario = rows_to_scenario(start, rows, seed)
     assert scenario.seed == 7
     assert type(scenario.start.x_cm) is float
     assert type(scenario.segments[0].duration_s) is float
@@ -232,22 +236,15 @@ def test_real_bad_row_shows_error(
     assert list(tmp_path.iterdir()) == []
 
 
-class _Usage:
-    """Stand-in for shutil.disk_usage's result: only .free (bytes) is read."""
-
-    def __init__(self, free: int) -> None:
-        self.free = free
-
-
 def _patch_disk(monkeypatch: pytest.MonkeyPatch, free: int) -> list[Path]:
     """Make generate_tab's shutil.disk_usage report `free` bytes; return the paths asked."""
     asked: list[Path] = []
 
-    def fake(path: Path) -> _Usage:
+    def fake(path: Path) -> SimpleNamespace:
         asked.append(Path(path))
-        return _Usage(free)
+        return SimpleNamespace(free=free)
 
-    monkeypatch.setattr(generate_tab.shutil, "disk_usage", fake)
+    monkeypatch.setattr(generate_tab, "shutil", SimpleNamespace(disk_usage=fake))
     return asked
 
 
@@ -314,10 +311,10 @@ def test_disk_guard_shows_oserror(
 ) -> None:
     """An OSError from disk_usage is shown as st.error and nothing is written."""
 
-    def broken(path: Path) -> _Usage:
+    def broken(path: Path) -> SimpleNamespace:
         raise OSError("no such device")
 
-    monkeypatch.setattr(generate_tab.shutil, "disk_usage", broken)
+    monkeypatch.setattr(generate_tab, "shutil", SimpleNamespace(disk_usage=broken))
     at = _run(_small(small_config, tmp_path)).button[0].click().run(timeout=RUN_TIMEOUT_S)
     assert not at.exception
     assert "no such device" in at.error[0].value
@@ -332,6 +329,8 @@ def test_non_whole_number_body_shows_error(small_config: Config, tmp_path: Path)
     at = _run(config).button[0].click().run(timeout=RUN_TIMEOUT_S)
     assert not at.exception
     assert len(at.error) == 1
+    assert "whole number" in at.error[0].value
+    assert "size_cm" in at.error[0].value
     assert not at.status
     assert list(tmp_path.iterdir()) == []
 
@@ -410,6 +409,146 @@ def test_existing_drive_with_other_hash_is_not_skipped(
     at = _run(config).button[0].click().run(timeout=RUN_TIMEOUT_S)
     assert not at.exception
     assert len(calls) == 1
+
+
+def _target(config: Config) -> Path:
+    """The folder the tab writes the demo drive to: raw_dir / first 12 hash characters."""
+    full_hash = read_hash(config)
+    return config.raw_dir / full_hash[:12]
+
+
+def read_hash(config: Config) -> str:
+    """Scenario hash of the demo scenario for this config's body."""
+    return scenario_hash(load_scenario(DEMO), config.body)
+
+
+def test_symlink_at_target_is_refused_not_skipped(
+    small_config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A symlink to a good same-hash drive is not "already generated": the writer refuses it."""
+    config = _small(small_config, tmp_path / "raw")
+    real = generate_to_disk(load_scenario(DEMO), config, tmp_path / "elsewhere")
+    before = read_manifest(real)
+    target = _target(config)
+    target.parent.mkdir()
+    try:
+        os.symlink(real, target, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"cannot create a symlink on this machine: {exc}")
+    calls = _count_writes(monkeypatch)
+    at = _run(config).button[0].click().run(timeout=RUN_TIMEOUT_S)
+    assert not at.exception
+    assert len(at.error) == 1
+    assert "Cannot write drive" in at.error[0].value
+    assert "already generated" not in " ".join(str(el.value) for el in at.markdown)
+    assert len(calls) == 1  # the writer was asked and refused
+    assert target.is_symlink()
+    assert read_manifest(real) == before
+    assert verify_drive(real).ok
+    assert sorted(p.name for p in (tmp_path / "raw").iterdir()) == [target.name]
+
+
+def test_target_reported_as_symlink_is_refused_not_skipped(
+    small_config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same as the symlink test but needs no rights: is_symlink answers True for a good drive."""
+    config = _small(small_config, tmp_path)
+    target = generate_to_disk(load_scenario(DEMO), config, tmp_path)
+    before = read_manifest(target)
+    real_is_symlink = Path.is_symlink
+
+    def linked(self: Path) -> bool:
+        return self == target or real_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", linked)
+    calls = _count_writes(monkeypatch)
+    at = _run(config).button[0].click().run(timeout=RUN_TIMEOUT_S)
+    assert not at.exception
+    assert len(at.error) == 1
+    assert "not a folder" in at.error[0].value
+    assert "already generated" not in " ".join(str(el.value) for el in at.markdown)
+    assert len(calls) == 1  # the writer was asked and refused
+    assert read_manifest(target) == before
+    assert [p.name for p in tmp_path.iterdir()] == [target.name]
+
+
+def test_file_at_target_is_refused(small_config: Config, tmp_path: Path) -> None:
+    """A plain file where the drive folder should be gives st.error and stays untouched."""
+    config = _small(small_config, tmp_path)
+    target = _target(config)
+    target.write_text("keep me", encoding="utf-8")
+    at = _run(config).button[0].click().run(timeout=RUN_TIMEOUT_S)
+    assert not at.exception
+    assert len(at.error) == 1
+    assert "not a folder" in at.error[0].value
+    assert target.read_text(encoding="utf-8") == "keep me"
+    assert [p.name for p in tmp_path.iterdir()] == [target.name]
+
+
+def test_raw_dir_that_is_a_file_shows_error(small_config: Config, tmp_path: Path) -> None:
+    """A raw_dir that is a file gives st.error and nothing is created or changed."""
+    raw = tmp_path / "raw_is_a_file"
+    raw.write_text("keep me", encoding="utf-8")
+    at = _run(_small(small_config, raw)).button[0].click().run(timeout=RUN_TIMEOUT_S)
+    assert not at.exception
+    assert len(at.error) == 1
+    assert raw.read_text(encoding="utf-8") == "keep me"
+    assert [p.name for p in tmp_path.iterdir()] == [raw.name]
+
+
+def test_relative_raw_dir_works_for_disk_guard(
+    small_config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative raw_dir is checked through its nearest existing parent (the current folder)."""
+    monkeypatch.chdir(tmp_path)
+    asked = _patch_disk(monkeypatch, 10**12)
+    config = _small(small_config, Path("rel") / "raw")
+    at = _run(config).button[0].click().run(timeout=RUN_TIMEOUT_S)
+    assert not at.exception
+    assert not at.error
+    assert asked == [Path(".")]
+    assert len(list((tmp_path / "rel" / "raw").iterdir())) == 1
+
+
+def test_recursion_error_while_verifying_falls_through(
+    small_config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A RecursionError (deeply nested manifest) in the check does not stop a normal write."""
+    config = _small(small_config, tmp_path)
+    folder = generate_to_disk(load_scenario(DEMO), config, tmp_path)
+
+    def deep(path: Path) -> None:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(generate_tab, "verify_drive", deep)
+    calls = _count_writes(monkeypatch)
+    at = _run(config).button[0].click().run(timeout=RUN_TIMEOUT_S)
+    assert not at.exception
+    assert not at.error
+    assert len(calls) == 1
+    assert verify_drive(folder).ok
+
+
+def test_permission_error_from_is_dir_falls_through(
+    small_config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PermissionError from is_dir on the target is an OSError: normal write, no crash."""
+    config = _small(small_config, tmp_path)
+    target = _target(config)
+    real_is_dir = Path.is_dir
+
+    def denied(self: Path) -> bool:
+        if self == target:
+            raise PermissionError("access denied")
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", denied)
+    calls = _count_writes(monkeypatch)
+    at = _run(config).button[0].click().run(timeout=RUN_TIMEOUT_S)
+    assert not at.exception
+    assert not at.error
+    assert len(calls) == 1
+    assert any(target.iterdir())  # the drive was written
 
 
 def test_generate_button_matches_cli(
