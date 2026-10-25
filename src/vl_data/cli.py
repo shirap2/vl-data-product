@@ -5,6 +5,7 @@ import typer
 import vl_data
 from vl_data.etl.cli import register as register_etl
 from vl_data.generator.cli import register as register_generator
+from vl_data.usecase.cli import register as register_usecase
 
 app = typer.Typer(
     name="vl_data",
@@ -14,6 +15,7 @@ app = typer.Typer(
 )
 register_generator(app)
 register_etl(app)
+register_usecase(app)
 
 
 def _version_callback(value: bool) -> None:

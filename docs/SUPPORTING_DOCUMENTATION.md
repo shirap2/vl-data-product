@@ -59,10 +59,9 @@ a whole number of frames, or a move whose start and end speed are both 0.
 
 ## 2. Architecture and design
 
-Status as of 2026-10-23: the design below is agreed. Module 1 (the generator) has an approved
-plan and is not built yet. Module 2 (the loader and ETL) has an approved plan and is not built
-either. Modules 3 and 4 are designed in outline and will get their own
-plans. Anything marked "planned" has not been run.
+Status as of 2026-10-25: Modules 1 (generator), 2 (loader and ETL) and 3 (use case) are built and
+checked by tests and by a full-density run. Module 4 (the BI app) is planned. Anything marked
+"planned" has not been run.
 
 ### What the product does
 
@@ -83,10 +82,10 @@ acceleration from the point cloud alone and showing that the result matches the 
 
 | Module | Job | Status |
 |---|---|---|
-| 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud, ground truth, manifest. Check itself in both directions. | Plan approved, not built |
-| 2 Loader / ETL | Verify hashes, validate frames (VL-001 to VL-006), reduce each frame to 9 keypoints, write to the lake. | Plan approved, not built |
-| 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. Evaluate against ground truth. | Outline |
-| 4 BI | One Streamlit app with three tabs: Generate, Clean, Analyze. | Outline |
+| 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud, ground truth, manifest. Check itself in both directions. | Built |
+| 2 Loader / ETL | Verify hashes, validate frames (VL-001 to VL-006), reduce each frame to 9 keypoints, write to the lake. | Built |
+| 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. Evaluate against ground truth. | Built |
+| 4 BI | One Streamlit app with three tabs: Generate, Clean, Analyze. | Planned |
 
 Shared code lives in `core/`: config loader, Arrow schemas, hashing, the manifest, and later the
 `Lake` class. Imports only point down: entry points, then modules, then core. Core never imports a
@@ -162,7 +161,7 @@ Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 | keypoints | bronze (built) | one row per keypoint: frame_id, timestamp_ns, keypoint name, x, y, z (cm, float64); 9 rows per frame |
 | quarantine | bronze (built) | one row per rejected frame or missing frame number: frame_id, row_index, code, message; a drive-level row has no frame_id |
 | lineage | bronze (built) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames and ground-truth file hashes |
-| motion | silver (planned) | per-frame x, velocity, acceleration |
+| motion | silver (built) | per-frame x, velocity, acceleration |
 | evaluation tables | gold (planned) | errors against ground truth |
 
 The warehouse tables use a generic, use-case-independent shape: a drive and frame key, a
@@ -366,7 +365,7 @@ whole centimetres.
 |---|---|---|---|---|
 | Motion model | Straight line along x, signed speed, no rotation | A cube's orientation cannot be read from its points | Planar motion, full rotation with a non-symmetric body | The real signal rotates |
 | Position estimate | Centroid of a frame's points | Exact for pure translation, needs no matching between frames | Tracking one reference point | Rotation or a changing point set |
-| Body | 1 m cube, 100 x 100 x 100 = 1,000,000-point lattice | Matches the assignment's example density; the PDF allows fewer frames, not thinner ones | A 10 x 10 x 10 sample (the earlier choice), a car-sized box | Storage or time limits |
+| Body | 1 m cube, 100 x 100 x 100 = 1,000,000-point lattice | The target density: 100 points per axis, 1,000,000 points per frame | A 10 x 10 x 10 sample (the earlier choice), a car-sized box | Storage or time limits |
 | Source | Generator writes a drive to disk | Simplest valid source | A service or a stream | Many consumers or live data |
 | Config | YAML plus a validating Python loader | Readable, fails early on bad values | Environment variables only, JSON | Many deployment environments |
 | Scenario validation | pydantic | Typed models with clear errors | dataclasses plus hand checks | Never needed so far |
@@ -475,6 +474,244 @@ with status `rejected`, and no keypoints. A folder name that is not a valid driv
 spec that does not fit the body raise `ValueError` and write nothing. Frame errors VL-001 to VL-004 and
 VL-006 send only the failed frame to quarantine. See [ERROR_CODES.md](#1-error-codes).
 
+### Module 3: motion use case (built)
+
+`vl_data.sdk.VLClient(lake: Lake)` is the read-only way to the lake. `drives() -> list[str]`
+lists the drives that have keypoints. `keypoints(drive, keypoint=None)`, `motion(drive)`,
+`lineage(drive)` and `quarantine(drive)` return Arrow tables with exactly the table schema
+(no `drive` column); keypoints are ordered by `frame_id`, then keypoint name. A valid unknown
+drive gives an empty table; an invalid drive id (for example `a/b` or empty) raises
+`ValueError` from the Lake. `sql(query) -> pa.Table` runs one SELECT over the table views (which do have a `drive`
+column) and closes its DuckDB connection after every query. The SDK never opens ground truth.
+
+The `motion` table (`MOTION_SCHEMA`) has one row per frame: `frame_id` int64, `timestamp_ns`
+int64, `x_cm` float64, `velocity_cm_s` float64 (null where there is no estimate),
+`acceleration_cm_s2` float64 (null likewise) and `n_points` int32 (samples in the estimator
+window).
+
+#### Estimator defaults, measured (sweep)
+
+The estimator fits a least-squares polynomial of order 2 or 3 to the centroid x of the frames
+inside a window centred on each frame, on the real timestamps, and reads velocity (cm/s) and
+acceleration (cm/s^2) from the fitted coefficients (`vl_data.usecase.estimator`). The window
+length, order, minimum points and gap limit are set in `config/motion.yaml`. The values there come
+from one command, run on 2026-10-25 (measured run time 23.9 s):
+
+```
+python tools/motion_sweep.py --write-yaml
+```
+
+The sweep generates two drives in memory with a 100 cm cube of 10 points per axis: the demo
+scenario (1,000 frames) and a harder drive of 624 frames (stop 4 s; ramp 0 to 600 cm/s over 3 s,
+200 cm/s^2; cruise 6 s; reversal 600 to -600 cm/s over 3 s, 400 cm/s^2; cruise 5 s; slow to 0 over
+3 s; stop 15 s). For each frame it takes the mean x of the points (the centroid, cm) and the true
+velocity and acceleration from the in-memory ground truth (no file and no lake is read). Errors are
+estimate minus truth. "int" columns use interior frames (no change of true acceleration within half
+a window of the frame, the last frame excluded; the same function `evaluate.interior_mask` that
+`evaluate_drive` uses); "all" columns use every frame with an estimate. The baseline row uses
+central differences of the centroid x (forward and backward at the ends) and a one-frame half
+window. For each cell `min_points` is `window // 2 + 1`, so the one-sided window at the clip ends
+still fits, and `max_gap_frames` is the config default, 4. Real output (measured):
+
+```
+Selection table: worst case over drives demo, hard, interior frames
+row                      window order min_pts interior  int vel max (cm/s)  int acc max (cm/s^2)
+window 8, order 2             8     2       5    91.2%              13.467                23.712
+window 8, order 3             8     3       5    91.2%              14.599                23.712
+window 12, order 2           12     2       7    87.3%              13.143                 8.282
+window 12, order 3           12     3       7    87.3%              13.486                 8.282
+window 16, order 2           16     2       9    83.5%              12.902                 4.378
+window 16, order 3           16     3       9    83.5%              13.515                 4.378
+window 24, order 2           24     2      13    75.8%              12.692                 1.568
+window 24, order 3           24     3      13    75.8%              12.979                 1.568
+window 32, order 2           32     2      17    68.1%              12.559                 0.653
+window 32, order 3           32     3      17    68.1%              12.784                 0.653
+window 48, order 2           48     2      25    53.2%               3.168                 0.286
+window 48, order 3           48     3      25    53.2%               3.232                 0.286
+per-frame differences         -     -       -    97.0%              19.000               452.000
+
+Drive demo: velocity in cm/s, acceleration in cm/s^2
+row                      frames int vel max int vel rms int acc max int acc rms all vel max all vel rms all acc max all acc rms
+window 8, order 2           936       4.533       1.525      23.712       5.799       6.400       1.595      65.091       7.564
+window 8, order 3           936       6.713       1.734      23.712       5.799       6.713       1.781      65.091       7.564
+window 12, order 2          908       3.701       1.485       8.282       2.047       8.967       1.673      57.031       5.927
+window 12, order 3          908       5.410       1.542       8.282       2.047       5.410       1.600      57.031       5.927
+window 16, order 2          880       3.520       1.460       4.378       1.000      11.412       1.836      55.678       6.240
+window 16, order 3          880       4.152       1.488       4.378       1.000       5.377       1.585      55.678       6.240
+window 24, order 2          824       3.278       1.418       1.568       0.350      16.271       2.404      54.568       7.299
+window 24, order 3          824       3.765       1.424       1.568       0.350       7.275       1.619      54.568       7.299
+window 32, order 2          768       3.235       1.372       0.653       0.142      20.877       3.220      52.905       8.319
+window 32, order 3          768       3.400       1.375       0.653       0.142       9.584       1.732      52.905       8.319
+window 48, order 2          656       3.168       1.244       0.286       0.047      30.263       5.365      51.928      10.086
+window 48, order 3          656       3.232       1.249       0.286       0.047      13.521       2.165      51.928      10.059
+per-frame differences       978       9.500       2.777     452.000     172.956       9.500       2.779     452.000     173.660
+
+Drive hard: velocity in cm/s, acceleration in cm/s^2
+row                      frames int vel max int vel rms int acc max int acc rms all vel max all vel rms all acc max all acc rms
+window 8, order 2           569      13.467       4.011      15.550       4.228      27.200       4.527     246.026      22.021
+window 8, order 3           569      14.599       4.056      15.550       4.228      14.599       4.313     246.026      22.021
+window 12, order 2          545      13.143       3.881       5.235       1.373      36.484       5.118     229.147      23.914
+window 12, order 3          545      13.486       3.889       5.235       1.373      18.302       4.322     229.147      23.914
+window 16, order 2          521      12.902       3.735       2.394       0.624      45.941       6.087     222.481      26.400
+window 16, order 3          521      13.515       3.741       2.394       0.624      22.348       4.420     222.481      26.400
+window 24, order 2          473      12.692       3.375       1.256       0.241      64.720       8.965     215.069      31.143
+window 24, order 3          473      12.979       3.378       1.256       0.241      30.394       4.819     215.069      31.143
+window 32, order 2          425      12.559       2.875       0.547       0.105      83.495      12.771     211.434      35.404
+window 32, order 3          425      12.784       2.875       0.547       0.105      38.252       5.511     211.434      35.404
+window 48, order 2          332       0.000       0.000       0.033       0.016     121.057      22.296     207.743      42.816
+window 48, order 3          332       0.000       0.000       0.033       0.016      53.951       7.708     207.743      42.816
+per-frame differences       605      19.000       4.424     400.000     162.934      19.000       4.517     656.000     169.026
+
+Chosen: window 16 frames, order 2, min_points 9, max_gap_frames 4
+Without the interior-fraction requirement (80%) the plain rule would choose window 48, order 2 (53.2% of frames interior in the worst drive)
+Measured worst-case interior max error, sweep drives: velocity 12.902 cm/s, acceleration 4.378 cm/s^2
+Measured worst-case interior max error, 1502 random and pinned scenarios (seed 0): velocity 8.848 cm/s, acceleration 21.212 cm/s^2
+Tolerances (x1.5 of the larger, rounded up to 0.1): velocity 19.4 cm/s, acceleration 31.9 cm/s^2
+```
+
+Selection rule. Among the window x order cells, take the lowest worst-case (larger of the two
+drives) interior acceleration max error; ties (errors equal to 6 decimals) go to the lower
+worst-case interior velocity max error, then the smaller window, then the lower order. A cell is
+eligible only if at least 80% of the frames of every drive are interior. This interior-fraction
+condition decides the result: the plain rule picks window 48, order 2 (measured 0.286 cm/s^2), but
+a 48-frame window leaves only 53.2% of the frames interior, so its small interior error hides
+large errors near every speed change (measured: all-frame acceleration max 207.7 cm/s^2 and
+velocity max 121.1 cm/s on the hard drive). Other shares give (measured, same table): 0.65 gives
+window 32, 0.7 and 0.75 give window 24, 0.8 gives window 16, 0.85 gives window 12. The 80% is a
+judgement. At window 48 the order 3 acceleration error is 0.28574749048425 and order 2 is
+0.28574749048971 (unrounded, measured): a difference of 5e-12 cm/s^2 is float round-off, so it
+is a tie, and the lower velocity error (3.168 against 3.232 cm/s) gives order 2. At the chosen
+window 16 the two orders also tie on acceleration (4.378 cm/s^2) and order 2 wins on velocity
+(12.902 against 13.515 cm/s). Without the tie rule the plain rule printed order 3 by round-off.
+
+The per-frame-difference baseline has an interior acceleration max error of 452.0 cm/s^2 (demo)
+and 400.0 cm/s^2 (hard), against 4.378 and 2.394 cm/s^2 for the chosen cell (measured):
+differencing integer-cm positions at 16 frames/s multiplies the 0.5 cm rounding by 2 x 16^2. The
+chosen cell has lower interior velocity and acceleration errors (max and RMS) and lower all-frame
+acceleration errors than the baseline on both drives (tests). It does not have a lower all-frame
+velocity max error: 11.4 against 9.5 cm/s (demo) and 45.9 against 19.0 cm/s (hard), because the
+16-frame fit smooths across speed changes and the clip ends (measured).
+
+Tolerances are 1.5 times the largest measured interior max error, rounded up to 0.1 (never below
+the measured value, never zero). The measured value is the largest of the chosen cell on the two
+sweep drives and on a seeded random-scenario search. The sweep drives start and end at rest, so
+they never test slow motion (where the integer-cm rounding of the centroid is a staircase) or a
+clip that ends while moving (the first and last 8 frames use a one-sided window). The search
+(`--random-search N`, default 1,500, `--seed`, default 0) draws N scenarios with numpy's RNG (up to
+5 legs of 48 to 96 frames, end speeds up to 400 cm/s) and always adds two pinned scenarios, the
+counterexamples the Hypothesis test found: one 48-frame move from 0 to 2 cm/s (interior
+acceleration max error 12.909 cm/s^2) and five 96-frame moves towards -68 cm/s (19.530 cm/s^2);
+the sweep drives alone would give only 4.378 cm/s^2 x 1.5 = 6.6 cm/s^2. Measured over the 1,502
+scenarios of the run above (seed 0): worst interior velocity 8.848 cm/s and acceleration
+21.212 cm/s^2. The tolerances are therefore velocity 12.902 x 1.5 = 19.4 cm/s (sweep drives) and
+acceleration 21.212 x 1.5 = 31.9 cm/s^2. Other seeds, 1,500 scenarios each (measured, not used
+for the YAML): seed 1 gives 9.806 cm/s and 25.364 cm/s^2, seed 2 gives 10.669 and 19.818, seed 3
+gives 12.381 and 19.896, all below the tolerances. The velocity error of about 12.5 cm/s on the
+hard drive is the forward-difference truth against the centred fit, a/32 for a = 400 cm/s^2
+(assumption M3-A17).
+
+Full-density check (measured once, 2026-10-25, 300 frames; the block is an excerpt of the command
+output, the first lines of the report):
+
+```
+python tools/motion_sweep.py --full-density-check 300
+Full-density check: 300 frames at 100 points per axis, 248 interior, 0 null; passed=True
+                       int vel max int vel rms int acc max int acc rms
+full density                 6.549       2.990       4.681       1.081
+10 points per axis           6.549       2.990       4.681       1.081
+Largest centroid x difference, full vs small lattice: 0.000000 cm
+Interior position error (full density): 0.4844 cm max
+Units: velocity cm/s, acceleration cm/s^2.
+```
+
+The 300 frames were generated at 100 points per axis with `generate_to_disk`, ingested into a temp
+lake, run through `compute_motion` and `evaluate_drive`, and the temp folders deleted. In this
+one run the interior errors match the small-lattice run of the same scenario to every printed
+digit and the centroid x values are identical (measured once on 300 frames). A unit test checks
+the identity behind it, centroid x = 49.5 + rint(x) for 2, 10 and 100 points per axis, on single
+frames. The check took 37.8 s in total. The tool limits N to 600 frames, prints the estimated
+size (12 MB per frame) and refuses to start when free disk space is under twice that estimate.
+
+#### Data flow
+
+```
+raw drive folder --ingest--> lake: keypoints, quarantine, lineage
+lake keypoints (centroid rows) --motion--> lake: motion
+motion + raw drive ground truth --evaluate--> printed report (not stored)
+VLClient.sql / keypoints / motion  <-- read the lake
+```
+
+`motion <drive_id>` reads the drive's lineage row (it must exist, be the only one, and have status
+`ok`) and its centroid keypoint rows through `VLClient`, fits the sliding window on the real
+timestamps, and replaces the drive's motion partition in one swap. It never opens the raw drive
+or the ground truth. `evaluate <drive_dir>` is the only code that reads the ground truth
+(`vl_data.usecase.evaluate`; a test greps the rest of `vl_data.usecase` and `vl_data.sdk` for it).
+It checks the drive files and hashes first, then the lineage hashes, then compares the stored
+motion with the truth frame by frame and returns the report; nothing is stored.
+
+#### Command line (built)
+
+```powershell
+python -m vl_data motion <drive_id> [--lake-dir DIR]
+python -m vl_data evaluate <drive_dir> [--lake-dir DIR]
+```
+
+The lake folder is `--lake-dir`, else `VL_LAKE_DIR`, else `lake_dir` in `config/etl.yaml`, else
+`warehouse` (the same resolution as `ingest`, through `load_etl_config()`). The window, order and
+tolerances come from `config/motion.yaml`. Exit codes follow `ingest`: 0 done (evaluate: passed),
+1 refused or failed (`MotionError`, `EvaluationError`, or a tolerance exceeded), 2 usage or
+configuration error (including a lake folder that does not exist), 3 a file could not be read or
+written. The named failures are in `docs/USE_CASE_ERRORS.md`.
+
+Real output of the full-density run (measured on 2026-10-25: the demo scenario, 1,000 frames x
+1,000,000 points, `generate` 79 s, `ingest` 56 s wall-clock):
+
+```
+> python -m vl_data motion bf394b9bfb42 --lake-dir <work>/lake        (exit 0, 1 s)
+drive: bf394b9bfb42
+frames_read: 1000 frames
+frames_estimated: 1000 frames
+frames_null: 0 frames (velocity or acceleration is null)
+
+> python -m vl_data evaluate <work>/raw/bf394b9bfb42 --lake-dir <work>/lake   (exit 0, 2 s)
+scenario_hash: bf394b9bfb421fda860ab97fbab54d5c36c995a661e770969cbffd9a2afa95c1
+frames_compared: 1000 frames
+frames_interior: 880 frames
+frames_null: 0 frames
+position (cm): interior max 0.498 rms 0.217 | tolerance 0.6
+velocity (cm/s): interior max 3.520 rms 1.460 | tolerance 19.4 | all frames max 11.412 rms 1.836
+acceleration (cm/s^2): interior max 4.378 rms 1.000 | tolerance 31.9 | all frames max 55.678 rms 6.240
+result: PASS
+```
+
+A second `motion` run left the motion partition file byte-identical (sha256
+`fdab85419d40c367dc6486db5c5b4951a68d5e2cb6d12f3f29a2b9ce96b796e0` both times, measured). The full
+suite after the run: 851 passed, 4 skipped in 66 s (measured). The log is local and git-ignored:
+`.claude/run-proofs/M3-TASK-7-iter1.log`.
+
+#### Evaluation
+
+A frame is interior when no change of true acceleration lies within half a window (8 frames at
+the default 16) of it; the last frame never is. The pass test uses interior frames only: position
+error at most `tolerances.position_cm` in `config/default.yaml`, velocity error at most
+`tolerances.velocity_cm_s` and acceleration error at most `tolerances.acceleration_cm_s2` in
+`config/motion.yaml`. The all-frame errors are printed for information. In the run above the
+all-frame acceleration maximum (55.678 cm/s^2) is above the tolerance because frames next to a
+change of acceleration are included; the interior maximum (4.378 cm/s^2) is the gated number.
+
+#### Technology reasons and alternatives
+
+- Estimator: a least-squares sliding window on the real timestamps. Alternatives considered:
+  per-frame differences (built and measured as the baseline above: interior acceleration max
+  error 452.0 and 400.0 cm/s^2); Savitzky-Golay (needs evenly spaced samples, so dropped frames
+  would need resampling, and adds the scipy dependency); a Kalman or RTS smoother (more complex,
+  needs a motion model and noise tuning; considered for a later version). The window fit needs
+  numpy only and uses the timestamps, so a dropped frame is a gap, not a shifted sample.
+- Storage and queries: Parquet files in the lake, read through DuckDB. Alternatives: SQLite or
+  Postgres (a server or a schema migration to run, and no file hash or folder swap per drive);
+  the SDK also returns Arrow tables. Pandas DataFrames were the alternative to Arrow tables: they
+  have no exact column types and no real nulls (a missing integer becomes a float NaN).
+
 ### Storage math
 
 A full-density frame is 100 x 100 x 100 = 1,000,000 points. At 3 coordinates of 4 bytes each
@@ -499,16 +736,16 @@ partitioning and compaction, and scheduled runs with an orchestrator.
   what "not atomic" means above). Re-ingesting repairs a crash.
 - The speed limit of 9,000 cm/s is a Tesla's top speed (322 km/h, 8,944 cm/s) rounded up. A
   faster vehicle would be flagged as impossible motion.
-- Tolerances come from one demo drive and may widen when the property tests run.
+- Tolerances come from two sweep drives and a random-scenario search (see the sweep section) and
+  may widen when other scenarios are tried; the sweep drives start and end at rest.
 
 The full assumption list is in [ASSUMPTIONS.md](ASSUMPTIONS.md).
 
 ## 3. Release notes
 
-Status as of 2026-10-23: the project skeleton is built (install, `--version`, help); the generator
-and the other modules are not. This draft is filled in as each module lands, and
-every command and number in it must come from a real run before submission. Items marked
-"planned" have not been run.
+Status as of 2026-10-25: Modules 1 (generator), 2 (loader and ETL) and 3 (use case) are built and
+checked by tests and by a full-density run. Module 4 (the BI app) is planned. Every command and
+number below comes from a real run; items marked "planned" have not been run.
 
 ### Product description
 
@@ -518,13 +755,15 @@ acceleration from the points alone, and shows the result next to the known truth
 is a 1 m cube that moves in a straight line, forwards, backwards and stopped, at different
 speeds. All data is synthetic.
 
+Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames, and `evaluate` checks the result against the ground truth and prints PASS or FAIL against tolerances in `config/motion.yaml`. The Python SDK (`VLClient`) and SQL read the lake.
+
 ### What is in this version
 
 | Part | What it does | Status |
 |---|---|---|
-| Generator | Writes a hashed drive: 16 fps point cloud, ground truth, manifest. Checks itself by recovering the scenario from the data. | Plan approved |
-| Loader / ETL | Verifies hashes, validates frames with error codes VL-001 to VL-006, keeps 9 keypoints per frame, and writes keypoints, quarantine and lineage tables to a queryable lake. | Plan approved, not built |
-| Use-case algorithm | Computes velocity and acceleration and compares them with ground truth. | Planned |
+| Generator | Writes a hashed drive: 16 fps point cloud, ground truth, manifest. Checks itself by recovering the scenario from the data. | Built |
+| Loader / ETL | Verifies hashes, validates frames with error codes VL-001 to VL-006, keeps 9 keypoints per frame, and writes keypoints, quarantine and lineage tables to a queryable lake. | Built |
+| Use-case algorithm | Computes velocity and acceleration and compares them with ground truth (`motion`, `evaluate`, `VLClient`). | Built |
 | BI | One Streamlit app: generate, clean, analyze. | Planned |
 
 ### Install and first check (run on 2026-10-23, Windows PowerShell, Python 3.12.6)
@@ -691,8 +930,64 @@ exit 0, `status: ok`, `frames_kept: 1000`, `frames_quarantined: 0`, `keypoint_ro
 wall-clock time for generate plus ingest (one run, measured). Three tests need an OS or account
 that can create symlinks or odd folder names and were skipped on this machine.
 
-Query and dashboard examples for the use case and the app will be added when Modules 3 and 4
-exist.
+#### Motion and evaluation (Module 3)
+
+Compute the centroid velocity and acceleration of an ingested drive, then compare them with the
+ground truth:
+
+```powershell
+python -m vl_data motion <hash12> --lake-dir warehouse
+python -m vl_data evaluate data/raw/<hash12> --lake-dir warehouse
+```
+
+`motion` prints `drive`, `frames_read`, `frames_estimated` and `frames_null` (counts of frames; a
+frame is null when its velocity or acceleration has no estimate). `evaluate` prints the scenario
+hash, the frames compared, interior and null, and the interior max and RMS error of position
+(cm), velocity (cm/s) and acceleration (cm/s^2) with their tolerances and the all-frame
+velocity and acceleration errors, then `result: PASS` or `result: FAIL`. Both use the exit codes
+of `ingest` (0 done or passed, 1 refused, failed or a tolerance exceeded, 2 usage or
+configuration error, 3 a file could not be read or written; inside `evaluate` a read failure during the comparison is reported as a failure, code 1) and the same lake folder rule
+(`--lake-dir`, else `VL_LAKE_DIR`, `config/etl.yaml`, `warehouse`). Window, order and
+tolerances are in `config/motion.yaml`. The failures are listed in `docs/USE_CASE_ERRORS.md`.
+
+Real run (2026-10-25, full density: demo scenario, 1,000 frames x 1,000,000 points; times are
+wall-clock, one machine). All exit codes were 0.
+
+| Command | Time | Main output |
+|---|---|---|
+| `generate --scenario src/vl_data/generator/scenarios/demo.yaml --out <work>/raw` | 79 s | `frames: 1000`, `points_per_frame: 1000000` |
+| `ingest <work>/raw/bf394b9bfb42 --lake-dir <work>/lake` | 56 s | `status: ok`, `frames_kept: 1000`, `keypoint_rows: 9000` |
+| `motion bf394b9bfb42 --lake-dir <work>/lake` | 1 s | `frames_read: 1000 frames`, `frames_estimated: 1000 frames`, `frames_null: 0 frames` |
+| `motion` again | 2 s | same; the motion partition file hash did not change |
+| `evaluate <work>/raw/bf394b9bfb42 --lake-dir <work>/lake` | 2 s | `frames_interior: 880 frames`, position 0.498 cm, velocity 3.520 cm/s, acceleration 4.378 cm/s^2 (interior max), `result: PASS` |
+| `pytest tests/ -q` | 66 s | 851 passed, 4 skipped |
+
+The full `evaluate` output is in `docs/ARCHITECTURE.md` (Module 3, Command line).
+
+Query the motion table from Python. This example was run on 2026-10-25 (measured) with the small body
+(100 cm cube, 10 points per axis) and the demo scenario, in a scratch lake. It opens your own lake
+folder, so replace the placeholder path with yours. The exact query text and output are in
+`.claude/run-proofs/M3-TASK-7-sql-example.log`:
+
+```python
+from vl_data.core.lake import Lake
+from vl_data.sdk.client import VLClient
+
+client = VLClient(Lake("<your lake folder>"))
+client.sql("SELECT count(*) AS n FROM motion").column("n")[0].as_py()  # -> 1000
+client.sql(
+    "SELECT frame_id, round(velocity_cm_s, 1) AS velocity_cm_s FROM motion "
+    "WHERE frame_id IN (0, 250, 500, 750, 999) ORDER BY frame_id"
+).to_pylist()
+```
+
+`VLClient.sql` returns a pyarrow Table. The second query gave (measured):
+
+```
+[{'frame_id': 0, 'velocity_cm_s': 0.0}, {'frame_id': 250, 'velocity_cm_s': 600.0}, {'frame_id': 500, 'velocity_cm_s': -300.1}, {'frame_id': 750, 'velocity_cm_s': -0.0}, {'frame_id': 999, 'velocity_cm_s': 0.0}]
+```
+
+Dashboard examples for the app will be added when Module 4 exists.
 
 ### Known issues
 
@@ -722,6 +1017,11 @@ exist.
 - Per-frame acceleration is not checked by any loader rule.
 - The point-cloud check (VL-004) allows for the 1 cm rounding wobble of whole-centimetre points. A single point moved by exactly 1 cm is not detected; a move of 2 cm or more is.
 - The loader decides which frame is a teleport by comparing positions. If the first three clean frames of a drive are themselves inconsistent, the loader trusts the most tightly agreeing pair; a drive that starts with several bad frames may be judged wrongly.
+- Motion (Module 3): the motion table is not refreshed by a new ingest. After re-ingesting a drive, run `motion` again; until then `evaluate` stops with an error if the frame count changed, and compares stale values if it did not.
+- `VLClient.sql` runs any single SELECT, including `read_parquet` on any file the user can read. It is a local single-user tool; do not expose it to untrusted input (assumption M3-A10).
+- The 16-frame least-squares fit smooths speed changes and the ends of a clip: frames within 8 frames of a change of acceleration, and the first and last 8 frames, carry larger errors (all-frame acceleration max 55.678 cm/s^2 against 4.378 cm/s^2 on interior frames, measured on the demo drive; assumption M3-A29).
+- `tools/motion_sweep.py` is a measuring tool whose logic is not type-checked by mypy.
+- `evaluate` hashes every file of the drive before it compares anything (`verify_drive`). The points are 12 GB per 1,000 full-density frames uncompressed; on disk they are compressed, and the measured `evaluate` took 2 s on the full-density demo drive. Noisier data would take longer (assumption M3-A33).
 - Single machine, CPU only.
 
 ### Coming soon
@@ -730,3 +1030,5 @@ Rotation and yaw with a non-symmetric body, planar motion, optional noise, event
 clip candidates, Apache Iceberg as the table format, a REST API, streaming ingestion (for example
 Kafka), parallel loading of many drives, a data-quality report function, a Spark backend for many
 drives, an object-store profile, scheduled runs, and delta-encoded storage.
+
+Module 3 follow-ups: a stored evaluation table (today the report is printed and not stored), event detection on the motion table, a REST API over the SDK, and a Kalman or RTS smoother as an alternative to the window fit.

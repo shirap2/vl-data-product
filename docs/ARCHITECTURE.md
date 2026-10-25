@@ -1,9 +1,8 @@
 # Architecture and design
 
-Status as of 2026-10-23: the design below is agreed. Module 1 (the generator) has an approved
-plan and is not built yet. Module 2 (the loader and ETL) has an approved plan and is not built
-either. Modules 3 and 4 are designed in outline and will get their own
-plans. Anything marked "planned" has not been run.
+Status as of 2026-10-25: Modules 1 (generator), 2 (loader and ETL) and 3 (use case) are built and
+checked by tests and by a full-density run. Module 4 (the BI app) is planned. Anything marked
+"planned" has not been run.
 
 ## What the product does
 
@@ -24,10 +23,10 @@ acceleration from the point cloud alone and showing that the result matches the 
 
 | Module | Job | Status |
 |---|---|---|
-| 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud, ground truth, manifest. Check itself in both directions. | Plan approved, not built |
-| 2 Loader / ETL | Verify hashes, validate frames (VL-001 to VL-006), reduce each frame to 9 keypoints, write to the lake. | Plan approved, not built |
-| 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. Evaluate against ground truth. | Outline |
-| 4 BI | One Streamlit app with three tabs: Generate, Clean, Analyze. | Outline |
+| 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud, ground truth, manifest. Check itself in both directions. | Built |
+| 2 Loader / ETL | Verify hashes, validate frames (VL-001 to VL-006), reduce each frame to 9 keypoints, write to the lake. | Built |
+| 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. Evaluate against ground truth. | Built |
+| 4 BI | One Streamlit app with three tabs: Generate, Clean, Analyze. | Planned |
 
 Shared code lives in `core/`: config loader, Arrow schemas, hashing, the manifest, and later the
 `Lake` class. Imports only point down: entry points, then modules, then core. Core never imports a
@@ -103,7 +102,7 @@ Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 | keypoints | bronze (built) | one row per keypoint: frame_id, timestamp_ns, keypoint name, x, y, z (cm, float64); 9 rows per frame |
 | quarantine | bronze (built) | one row per rejected frame or missing frame number: frame_id, row_index, code, message; a drive-level row has no frame_id |
 | lineage | bronze (built) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames and ground-truth file hashes |
-| motion | silver (planned) | per-frame x, velocity, acceleration |
+| motion | silver (built) | per-frame x, velocity, acceleration |
 | evaluation tables | gold (planned) | errors against ground truth |
 
 The warehouse tables use a generic, use-case-independent shape: a drive and frame key, a
@@ -307,7 +306,7 @@ whole centimetres.
 |---|---|---|---|---|
 | Motion model | Straight line along x, signed speed, no rotation | A cube's orientation cannot be read from its points | Planar motion, full rotation with a non-symmetric body | The real signal rotates |
 | Position estimate | Centroid of a frame's points | Exact for pure translation, needs no matching between frames | Tracking one reference point | Rotation or a changing point set |
-| Body | 1 m cube, 100 x 100 x 100 = 1,000,000-point lattice | Matches the assignment's example density; the PDF allows fewer frames, not thinner ones | A 10 x 10 x 10 sample (the earlier choice), a car-sized box | Storage or time limits |
+| Body | 1 m cube, 100 x 100 x 100 = 1,000,000-point lattice | The target density: 100 points per axis, 1,000,000 points per frame | A 10 x 10 x 10 sample (the earlier choice), a car-sized box | Storage or time limits |
 | Source | Generator writes a drive to disk | Simplest valid source | A service or a stream | Many consumers or live data |
 | Config | YAML plus a validating Python loader | Readable, fails early on bad values | Environment variables only, JSON | Many deployment environments |
 | Scenario validation | pydantic | Typed models with clear errors | dataclasses plus hand checks | Never needed so far |
@@ -416,7 +415,7 @@ with status `rejected`, and no keypoints. A folder name that is not a valid driv
 spec that does not fit the body raise `ValueError` and write nothing. Frame errors VL-001 to VL-004 and
 VL-006 send only the failed frame to quarantine. See [ERROR_CODES.md](ERROR_CODES.md).
 
-## Module 3: motion use case (in progress)
+## Module 3: motion use case (built)
 
 `vl_data.sdk.VLClient(lake: Lake)` is the read-only way to the lake. `drives() -> list[str]`
 lists the drives that have keypoints. `keypoints(drive, keypoint=None)`, `motion(drive)`,
@@ -573,6 +572,73 @@ digit and the centroid x values are identical (measured once on 300 frames). A u
 the identity behind it, centroid x = 49.5 + rint(x) for 2, 10 and 100 points per axis, on single
 frames. The check took 37.8 s in total. The tool limits N to 600 frames, prints the estimated
 size (12 MB per frame) and refuses to start when free disk space is under twice that estimate.
+
+### Data flow
+
+```
+raw drive folder --ingest--> lake: keypoints, quarantine, lineage
+lake keypoints (centroid rows) --motion--> lake: motion
+motion + raw drive ground truth --evaluate--> printed report (not stored)
+VLClient.sql / keypoints / motion  <-- read the lake
+```
+
+`motion <drive_id>` reads the drive's lineage row (it must exist, be the only one, and have status
+`ok`) and its centroid keypoint rows through `VLClient`, fits the sliding window on the real
+timestamps, and replaces the drive's motion partition in one swap. It never opens the raw drive
+or the ground truth. `evaluate <drive_dir>` is the only code that reads the ground truth
+(`vl_data.usecase.evaluate`; a test greps the rest of `vl_data.usecase` and `vl_data.sdk` for it).
+It checks the drive files and hashes first, then the lineage hashes, then compares the stored
+motion with the truth frame by frame and returns the report; nothing is stored.
+
+### Command line (built)
+
+```powershell
+python -m vl_data motion <drive_id> [--lake-dir DIR]
+python -m vl_data evaluate <drive_dir> [--lake-dir DIR]
+```
+
+The lake folder is `--lake-dir`, else `VL_LAKE_DIR`, else `lake_dir` in `config/etl.yaml`, else
+`warehouse` (the same resolution as `ingest`, through `load_etl_config()`). The window, order and
+tolerances come from `config/motion.yaml`. Exit codes follow `ingest`: 0 done (evaluate: passed),
+1 refused or failed (`MotionError`, `EvaluationError`, or a tolerance exceeded), 2 usage or
+configuration error (including a lake folder that does not exist), 3 a file could not be read or
+written. The named failures are in `docs/USE_CASE_ERRORS.md`.
+
+Real output of the full-density run (measured on 2026-10-25: the demo scenario, 1,000 frames x
+1,000,000 points, `generate` 79 s, `ingest` 56 s wall-clock):
+
+```
+> python -m vl_data motion bf394b9bfb42 --lake-dir <work>/lake        (exit 0, 1 s)
+drive: bf394b9bfb42
+frames_read: 1000 frames
+frames_estimated: 1000 frames
+frames_null: 0 frames (velocity or acceleration is null)
+
+> python -m vl_data evaluate <work>/raw/bf394b9bfb42 --lake-dir <work>/lake   (exit 0, 2 s)
+scenario_hash: bf394b9bfb421fda860ab97fbab54d5c36c995a661e770969cbffd9a2afa95c1
+frames_compared: 1000 frames
+frames_interior: 880 frames
+frames_null: 0 frames
+position (cm): interior max 0.498 rms 0.217 | tolerance 0.6
+velocity (cm/s): interior max 3.520 rms 1.460 | tolerance 19.4 | all frames max 11.412 rms 1.836
+acceleration (cm/s^2): interior max 4.378 rms 1.000 | tolerance 31.9 | all frames max 55.678 rms 6.240
+result: PASS
+```
+
+A second `motion` run left the motion partition file byte-identical (sha256
+`fdab85419d40c367dc6486db5c5b4951a68d5e2cb6d12f3f29a2b9ce96b796e0` both times, measured). The full
+suite after the run: 851 passed, 4 skipped in 66 s (measured). The log is local and git-ignored:
+`.claude/run-proofs/M3-TASK-7-iter1.log`.
+
+### Evaluation
+
+A frame is interior when no change of true acceleration lies within half a window (8 frames at
+the default 16) of it; the last frame never is. The pass test uses interior frames only: position
+error at most `tolerances.position_cm` in `config/default.yaml`, velocity error at most
+`tolerances.velocity_cm_s` and acceleration error at most `tolerances.acceleration_cm_s2` in
+`config/motion.yaml`. The all-frame errors are printed for information. In the run above the
+all-frame acceleration maximum (55.678 cm/s^2) is above the tolerance because frames next to a
+change of acceleration are included; the interior maximum (4.378 cm/s^2) is the gated number.
 
 ### Technology reasons and alternatives
 

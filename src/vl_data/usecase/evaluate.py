@@ -282,8 +282,9 @@ def evaluate_drive(
     (cm), cfg.tolerances.velocity_cm_s (cm/s) and cfg.tolerances.acceleration_cm_s2 (cm/s^2).
     Nothing is stored.
     """
-    drive_id = Path(os.path.abspath(drive_dir)).name
+    drive_id = "?"
     try:
+        drive_id = Path(os.path.abspath(drive_dir)).name
         verdict = verify_drive(drive_dir)
         manifest = read_manifest(drive_dir) if verdict.ok else None
     except (OSError, ValueError) as exc:
