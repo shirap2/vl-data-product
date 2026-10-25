@@ -1,7 +1,7 @@
 # Architecture and design
 
-Status as of 2026-10-23: the design below is agreed. Module 1 (the generator) has an approved
-plan and is not built yet. Modules 2 to 4 are designed in outline and will get their own plans.
+Status as of 2026-10-25: the design below is agreed. Module 1 (the generator, with its Generate
+tab) is built and tested. Modules 2 to 4 are designed in outline and will get their own plans.
 Anything marked "planned" has not been run.
 
 ## What the product does
@@ -23,7 +23,7 @@ acceleration from the point cloud alone and showing that the result matches the 
 
 | Module | Job | Status |
 |---|---|---|
-| 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud, ground truth, manifest. Check itself in both directions. | Plan approved, not built |
+| 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud, ground truth, manifest. Check itself in both directions. | Built and tested |
 | 2 Loader / ETL | Verify hashes, validate frames (VL-001 to VL-006), reduce each frame to 9 keypoints, write to the lake. | Contract agreed, plan pending |
 | 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. Evaluate against ground truth. | Outline |
 | 4 BI | One Streamlit app with three tabs: Generate, Clean, Analyze. | Outline |
@@ -54,8 +54,10 @@ Built so far: the project skeleton (`pyproject.toml`, `src/vl_data/__init__.py`,
 `config/default.yaml` and `tests/core/`), and the first three generator modules
 (`src/vl_data/generator/models.py`, `body.py`, `motion.py`, the demo scenario in
 `generator/scenarios/demo.yaml`, and `tests/generator/`), then the drive builder and writer
-(`drive.py`, `writer.py`) and the generator's `generate` and `verify` commands (`generator/cli.py`,
-registered by the root `cli.py`). The back direction (`inverse.py`) and the `roundtrip` command are built, and so is the fault-injection helper (`faults.py`). Not built yet: the Generate tab.
+(`drive.py`, `writer.py`) and the generator's `generate` and `verify` commands
+(`generator/cli.py`, registered by the root `cli.py`). The back direction (`inverse.py`) and the
+`roundtrip` command are built, and so is the fault-injection helper (`faults.py`). The Generate
+tab (`generator/ui/`) is built.
 
 ## Data flow inside the generator
 
@@ -83,7 +85,13 @@ How a drive is written:
   copy of the old drive). The temporary folder is removed on any error.
 - The frames are never computed from `ground_truth.parquet`. Only manifest hashing and verify
   read its bytes; the generator itself only writes it.
-- Measured on the 1,000-frame demo at 1,000,000 points per frame (a scratch script with the same 50-frame batching, `.claude/run-proofs/FULL-DENSITY-measure.log`): 75.1 s, peak working set 2,859 MiB, `frames.parquet` 287,134,433 bytes with zstd (4,024,944,648 bytes with snappy). The real `generate` command took 81 s including verification. The 2,000-frame cap was not run (about 24 GB raw, about 0.6 GB on disk and about 2.5 minutes, scaled from this run).
+- Measured on the 1,000-frame demo at 1,000,000 points per frame (a scratch script with the same
+  50-frame batching, `.claude/run-proofs/FULL-DENSITY-measure.log`): 75.1 s, peak working set
+  2,859 MiB, `frames.parquet` 287,134,433 bytes with zstd (4,024,944,648 bytes with snappy). The
+  real `generate` command took 81 s including verification on 2026-10-24; its time in the
+  fresh-clone run of 2026-10-25 is in RELEASE_NOTES, Usage (measured, local, git-ignored, A28). The
+  2,000-frame cap was not run (about 24 GB raw, about 0.6 GB on disk and about 2.5 minutes, scaled
+  from this run).
 
 Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 
@@ -107,7 +115,7 @@ timestamp, and numeric measures.
 
 | Module | What it holds | Rules worth knowing |
 |---|---|---|
-| `core/config.py` | `Config` (fps, raw_dir, body, tolerances, fit) and `load_config` | Unknown keys and non-positive values are rejected. `fps` must divide 1,000,000,000 ns evenly (16 fps gives 62,500,000 ns). The environment variable `VL_RAW_DIR` overrides `raw_dir`. |
+| `core/config.py` | `Config` (fps, raw_dir, body, tolerances, fit) and `load_config` | Unknown keys and non-positive values are rejected, and so is a `points_per_axis` above `size_cm` (checked when the config loads; ASSUMPTIONS A65). `fps` must divide 1,000,000,000 ns evenly (16 fps gives 62,500,000 ns). The environment variable `VL_RAW_DIR` overrides `raw_dir`. |
 | `core/hashing.py` | `canonical_json`, `sha256_hex`, `file_sha256`, `scenario_hash` | Keys are sorted, there are no spaces, and a float with a whole value is written as an int, so 600 and 600.0 hash the same. NaN and infinity are rejected. |
 | `core/schemas.py` | `FRAMES_SCHEMA`, `GROUND_TRUTH_SCHEMA`, `encode_points`, `decode_points` | A frame's points are `points_per_frame` x 3 int32 values in cm (1,000,000 at the shipped density), little-endian, row-major, in one binary column. |
 | `core/manifest.py` | `Manifest`, `FileEntry`, `VerifyResult`, build, write, read, `verify_drive` | The manifest lists every file in the drive folder except itself. `verify_drive` reports changed, missing, extra and invalidly named files and a scenario that no longer matches its hash. A bad manifest, an unreadable file or a scenario that cannot be hashed is a reported problem, not an error. A pathological listed name (hundreds of characters) or a folder that cannot be listed can still raise an OSError. |
@@ -165,13 +173,24 @@ recovers per-frame position and velocity from the frames, `fit_segments` fits mo
 pieces to them, and `compare_scenarios` checks the result against the original within stated
 limits. The back direction reads frames only, never ground truth.
 
-Limits measured on the demo drive (2026-10-24; run log `.claude/run-proofs/TASK-5-measure.log`, local, git-ignored (A28), from `python -m vl_data roundtrip`
-and `.claude/run-proofs/TASK-5-measure.py`), and the limit set in `config/default.yaml`:
+Limits measured on the demo drive, from two different runs, and the limits set in
+`config/default.yaml`.
+
+(a) 2026-10-24, on the old 10x10x10 body (run log `.claude/run-proofs/TASK-5-measure.log`, local,
+git-ignored (A28), from `.claude/run-proofs/TASK-5-measure.py`). These two were not re-measured at
+full density:
 
 | Quantity | Measured max | Test limit |
 |---|---|---|
-| Position error (x) | 0.498 cm | 0.6 cm |
+| Position error (x), centroid | 0.498 cm | 0.6 cm |
 | Velocity error per frame | 15.0 cm/s | 17 cm/s |
+
+(b) 2026-10-25, at full density (1,000,000 points per frame), printed by `python -m vl_data
+roundtrip` in the fresh-clone run 1 (`.claude/run-proofs/FINAL-DOCS-iter1-fresh-clone.log`, local,
+git-ignored, A28):
+
+| Quantity | Measured max | Test limit |
+|---|---|---|
 | Segment boundary error | 4 frames | 6 frames |
 | Segment duration error | 5 frames | 8 frames |
 | End-speed error | 24.4 cm/s | 40 cm/s |
@@ -210,10 +229,11 @@ prints a `warning:` line on stderr for every segment under 32 frames
 ## Fault injection
 
 `generator/faults.py` builds bad drives on purpose so Module 2 can be tested against known errors.
-`inject_faults(drive, faults, frame_interval_ns=62_500_000)` returns a new `Drive` and a dict of counts per error code. Only the
-frames table changes; the ground truth, the scenario and the scenario hash are copied unchanged, and
-the input drive is not modified. A faulty drive can be written with `write_drive` and still passes
-`verify_drive`, because the manifest is built from the faulty file.
+`inject_faults(drive, faults, frame_interval_ns=62_500_000)` returns a new `Drive` and a dict of
+counts per error code. Only the frames table changes; the ground truth, the scenario and the
+scenario hash are copied unchanged, and the input drive is not modified. A faulty drive can be
+written with `write_drive` and still passes `verify_drive`, because the manifest is built from the
+faulty file.
 
 | Fault | Code | What it does to the frames table |
 |-------|------|----------------------------------|
@@ -229,12 +249,47 @@ so an earlier drop or duplicate never moves the target. The returned dict holds 
 were injected, and each count is the number of fault objects with that code. These inputs raise
 `ValueError` instead of being applied: repeated `frame_id` values in the original table; an unknown
 `frame_id`; two faults on the same `frame_id` (including the same fault twice); a second
-`BreakSchema`; a `delta_ns` that is not an int, is 0, leaves int64 or is not smaller than one frame interval
-(`frame_interval_ns`, ns) in size; `dx_cm == 0`; an input table whose own timestamps are equal or
-not increasing; final timestamps of the surviving rows that are not strictly increasing in original
-row order (dropped rows and `DuplicateFrame` copies are left out); `CorruptPoints` on a frame with under 12 bytes; and a `dx_cm` that
-overflows int32. Each fault is intended to trigger its own code; Module 2 behaviour is not yet
-verified.
+`BreakSchema`; a `delta_ns` that is not an int, is 0, leaves int64 or is not smaller than one frame
+interval (`frame_interval_ns`, ns) in size; `dx_cm == 0`; an input table whose own timestamps are
+equal or not increasing; final timestamps of the surviving rows that are not strictly increasing in
+original row order (dropped rows and `DuplicateFrame` copies are left out); `CorruptPoints` on a
+frame with under 12 bytes; and a `dx_cm` that overflows int32. Each fault is intended to trigger
+its own code; Module 2 behaviour is not yet verified.
+
+## Generate tab
+
+`generator/ui/generate_tab.py` draws the tab and `generate_app.py` is a short runner (two imports
+and one call; `streamlit run src/vl_data/generator/ui/generate_app.py`); the three-tab shell belongs to the BI
+module. `rows_to_scenario` turns the form values and the table rows into a `Scenario` (`float()` on
+every number, `int()` on the seed, stop rows lose `end_speed_cm_s`, a blank, NaN, infinite or true/false
+cell, an empty table or a bad seed raises a clear `ValueError`; ASSUMPTIONS A74, A80). `preview_figure`
+plots speed (cm/s) against time (s) from `motion.speed_profile`. A wrong form or table shows
+`st.error` and no plot.
+
+The Generate button runs these steps in order (ASSUMPTIONS A70 to A80):
+
+1. Work out the drive hash and the target folder (`raw_dir/<hash12>`). One `try` block runs
+   `check_batch_fits`, `scenario_hash` and `frame_count`; a `ValueError` from any of them (a body
+   whose 50-frame batch cannot fit one Arrow binary array, a fractional body in the hash, or the
+   frame count) is shown with `st.error` as "Cannot generate: ...".
+2. Skip an existing drive: `_verified_manifest` accepts the folder only if it is a real folder (not a
+   symlink), `verify_drive` passes in full (every file is hashed again, in an `st.status` block) and
+   its manifest has the same hash. The tab then says "already generated", shows the folder, hash and
+   frame count, and writes nothing. A folder that fails the check is written again.
+3. Disk guard: `_free_bytes` reads the free bytes of the `raw_dir` disk (or its nearest existing
+   parent). If the number of frames x the bytes per frame that `check_batch_fits(config)` returns
+   (an uncompressed upper bound, nothing credited back for an existing folder) is larger, the tab
+   shows `st.error` and writes nothing.
+4. Otherwise it shows a warning with the frame count and that size, then calls
+   `generate_to_disk(scenario, config, config.raw_dir)` inside an `st.status` block. This is the
+   function the CLI calls, so both give the same drive (tested by comparing the scenario hash and
+   every file hash). The writer refuses a symlink or a plain file at the target path and replaces
+   nothing; the tab shows its error ("Cannot write drive: ..."). The disk guard (step 3) runs
+   before the writer, so with a full disk the user sees the disk error first.
+
+The 2,000-frame cap stays in `Scenario`. Two clicks at once for a drive that does not exist yet can
+both write (ASSUMPTIONS A79). Streamlit's test runner cannot edit the table, so only the default demo
+rows are tested (`tests/generator/test_ui.py`, ASSUMPTIONS A73, A75).
 
 ## Error handling
 
