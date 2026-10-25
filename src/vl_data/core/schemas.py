@@ -26,6 +26,8 @@ GROUND_TRUTH_SCHEMA: pa.Schema = pa.schema(
 
 BYTES_PER_POINT = 12  # bytes per point: three little-endian int32 values (cm)
 ARROW_BINARY_LIMIT = 2**31  # bytes: offsets of an Arrow binary array are int32
+MAX_BODY_SIZE_CM = 2_147_483_647  # cm: int32 maximum, the largest cube edge
+MAX_POINTS_PER_AXIS = 1_000_000  # count: the largest lattice size per axis
 
 
 def encode_points(points: NDArray[np.int32]) -> bytes:

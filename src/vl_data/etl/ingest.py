@@ -65,6 +65,11 @@ class _Reject(Exception):
         self.rows = rows
 
 
+def _reject(message: str) -> _Reject:
+    """A whole-drive rejection with one INTEGRITY quarantine row; use as `raise _reject(...)`."""
+    return _Reject([(INTEGRITY, message)])
+
+
 @dataclass
 class _Gate:
     """What is known about the drive when a rejection happens (for the lineage row)."""
@@ -80,31 +85,24 @@ def ingest_drive(drive_dir: Path, lake: Lake, etl: EtlConfig) -> IngestResult:
     and is assumed not to change during the ingest (frames.parquet is hashed by verify_drive and
     opened again by the scan).
 
-    Gates, cheapest first: the folder name must be a valid drive id (ValueError otherwise, nothing
-    is written); the manifest must be readable (a missing, invalid or schema-1 manifest rejects the
-    drive with the folder name as its id); scenario_hash must be 64 lowercase hex characters (the
-    lineage then stores NULL for a bad one) and the folder name must equal scenario_hash[:12]; the
-    schema_version must be in etl.supported_schema_versions; fps (frames/s) must divide 1e9 ns;
-    points per frame (points, from the manifest and from the body) must not exceed
-    etl.max_points_per_frame; the body and scenario must be valid; frames.parquet must be listed;
-    verify_drive must pass; only then is the lattice built; the file must open, its footer row
-    counts must be at most 2 * expected frames + 1000 rows (total, each row group, and the
-    number of row groups), and no row group may exceed etl.max_row_group_mib (MiB, uncompressed,
-    as the footer claims: a compression bomb can lie about it, a known limit); the schema must
-    match (VL-005). Then the file is scanned once in chunks of etl.chunk_frames(points_per_frame)
-    frames, a frame_id outside 0..expected-1 rejects the drive, and the frame rules run. Any
-    rejection writes one INTEGRITY (or VL-005) quarantine row per problem (text cleaned of control
-    characters and cut to 300 characters; the first 20 problems, then one "and K more problems"
-    row), a lineage row with status "rejected" and zero counts, and removes the drive's
-    keypoints. A read, scan or allocation failure (OSError, ValueError, RecursionError, Arrow
-    error, MemoryError) is a drive-level INTEGRITY rejection. A keypoint spec that does not fit
-    the drive's body raises ValueError (a config error, nothing is written).
+    Gate order (cheap checks first, so a bad manifest never costs a full read): see
+    docs/ASSUMPTIONS.md M2-A34, then verify_drive, the lattice, the frames-file footer (row counts
+    at most 2 * expected frames + 1000 rows; each row group at most etl.max_row_group_mib MiB as
+    the footer claims) and the schema (VL-005); then one chunked scan and the frame rules.
+
+    Raises ValueError for an invalid drive id or a keypoint spec that does not fit the drive's
+    body (config errors; nothing is written). Any other failure is a rejection, returned not
+    raised: one INTEGRITY (or VL-005) quarantine row per problem (text cleaned and cut to 300
+    characters; the first 20 problems, then one "and K more problems" row), a lineage row with
+    status "rejected" and zero counts, and the drive's keypoints removed. Read, scan or
+    allocation failures (OSError, ValueError, RecursionError, Arrow error, MemoryError) are
+    rejections too.
 
     A good drive writes keypoints (kept frames sorted by frame_id, then YAML keypoint order),
-    then quarantine, then lineage last, each as one partition swap. verify_drive hashes
-    ground_truth.parquet in full but this function never opens or parses it; its manifest hash
-    goes into the lineage row. frames_rejected in the result counts quarantine rows that name a
-    file row, so a frame that breaks two rules counts twice. Returns an IngestResult.
+    then quarantine, then lineage last, each as one partition swap. ground_truth.parquet is
+    hashed by verify_drive but never opened or parsed here; its manifest hash goes into the
+    lineage row. frames_rejected counts quarantine rows that name a file row, so a frame that
+    breaks two rules counts twice. Returns an IngestResult.
     """
     drive = Path(os.path.abspath(drive_dir)).name  # the name given, links not followed
     lake.read("lineage", drive)  # raises ValueError for an invalid drive id, before any write
@@ -178,116 +176,132 @@ def _check_footer(metadata: Any, frames_expected: int) -> None:
     """
     cap = _row_cap(frames_expected)  # rows
     if metadata.num_rows > cap:
-        raise _Reject([(INTEGRITY, f"footer claims {metadata.num_rows} rows, above the cap {cap}")])
+        raise _reject(f"footer claims {metadata.num_rows} rows, above the cap {cap}")
     if metadata.num_row_groups > cap:
-        raise _Reject(
-            [(INTEGRITY, f"footer lists {metadata.num_row_groups} row groups, above the cap {cap}")]
-        )
+        raise _reject(f"footer lists {metadata.num_row_groups} row groups, above the cap {cap}")
     for group in range(metadata.num_row_groups):
         rows = metadata.row_group(group).num_rows
         if rows > cap:
-            raise _Reject(
-                [(INTEGRITY, f"row group {group} claims {rows} rows, above the cap {cap}")]
-            )
+            raise _reject(f"row group {group} claims {rows} rows, above the cap {cap}")
+
+
+@dataclass(frozen=True)
+class _Checked:
+    """A drive that passed the gates before any big read."""
+
+    manifest: Manifest
+    points_per_frame: int  # points in one raw frame (= the lattice count)
+    frames_expected: int  # frames the scenario implies
+    lattice: NDArray[np.int32]  # (points_per_frame, 3) cm
+
+
+@dataclass(frozen=True)
+class _Scanned:
+    """The frames file after the scan and the frame rules."""
+
+    facts: pd.DataFrame  # one row per file row
+    violations: pd.DataFrame  # frame-rule violations (the quarantine rows)
+    n_kept: int  # frames that broke no rule
+    keypoint_batches: list[pa.RecordBatch]  # the kept frames reduced to keypoints
 
 
 def _ingest(drive_dir: Path, drive: str, lake: Lake, etl: EtlConfig, gate: _Gate) -> IngestResult:
-    """Run gates, scan, rules and writes; raise _Reject for a whole-drive failure."""
+    """Gates, footer check, scan with rules, then the writes; _Reject on a whole-drive failure."""
+    checked = _check_drive(drive_dir, drive, etl, gate)
+    schema = _open_frames_file(drive_dir, checked.frames_expected, etl)
+    scanned = _scan_and_validate(drive_dir, checked, schema, etl)
+    return _write_ok(lake, drive, etl, checked, scanned)
+
+
+def _check_drive(drive_dir: Path, drive: str, etl: EtlConfig, gate: _Gate) -> _Checked:
+    """The gates in the order of M2-A34, then verify_drive and the lattice (no frames read)."""
     try:
         manifest = read_manifest(drive_dir)
     except (OSError, ValueError) as error:
-        message = f"cannot read manifest.json: {_short(error, drive_dir)}"
-        raise _Reject([(INTEGRITY, message)]) from error
+        raise _reject(f"cannot read manifest.json: {_short(error, drive_dir)}") from error
     gate.manifest = manifest
     if not _HASH_RE.fullmatch(manifest.scenario_hash):
-        raise _Reject([(INTEGRITY, "scenario_hash is not 64 lowercase hex characters")])
+        raise _reject("scenario_hash is not 64 lowercase hex characters")
     if drive != manifest.scenario_hash[:12]:
-        raise _Reject(
-            [
-                (
-                    INTEGRITY,
-                    f"folder name {drive} is not the first 12 hex of scenario_hash "
-                    f"{manifest.scenario_hash}",
-                )
-            ]
+        raise _reject(
+            f"folder name {drive} is not the first 12 hex of scenario_hash {manifest.scenario_hash}"
         )
     if manifest.schema_version not in etl.supported_schema_versions:
-        raise _Reject(
-            [
-                (
-                    INTEGRITY,
-                    f"schema_version {_int_text(manifest.schema_version)} is not supported "
-                    f"(supported: {etl.supported_schema_versions})",
-                )
-            ]
+        raise _reject(
+            f"schema_version {_int_text(manifest.schema_version)} is not supported "
+            f"(supported: {etl.supported_schema_versions})"
         )
     if manifest.fps < 1 or NS_PER_SECOND % manifest.fps != 0:
-        raise _Reject(
-            [
-                (
-                    INTEGRITY,
-                    f"fps {_int_text(manifest.fps)} does not divide 1,000,000,000 ns evenly",
-                )
-            ]
-        )
+        raise _reject(f"fps {_int_text(manifest.fps)} does not divide 1,000,000,000 ns evenly")
     # The Manifest validator forces points_per_frame == body.points_per_axis ** 3, so this one
     # number is also the lattice count the scan checks, and the keypoint-spec check below uses it.
     points_per_frame = manifest.points_per_frame
     if points_per_frame > etl.max_points_per_frame:
-        raise _Reject(
-            [
-                (
-                    INTEGRITY,
-                    f"points per frame {_int_text(points_per_frame)} exceeds max_points_per_frame "
-                    f"{etl.max_points_per_frame}",
-                )
-            ]
+        raise _reject(
+            f"points per frame {_int_text(points_per_frame)} exceeds max_points_per_frame "
+            f"{etl.max_points_per_frame}"
         )
     try:
         body = drive_body(manifest)
         frames_expected = expected_frame_count(manifest)
     except ValueError as error:
-        message = f"invalid body or scenario: {_short(error, drive_dir)}"
-        raise _Reject([(INTEGRITY, message)]) from error
+        raise _reject(f"invalid body or scenario: {_short(error, drive_dir)}") from error
     if FRAMES_NAME not in manifest.files:
-        raise _Reject([(INTEGRITY, f"{FRAMES_NAME} is not listed in the manifest")])
+        raise _reject(f"{FRAMES_NAME} is not listed in the manifest")
     check_keypoint_specs(points_per_frame, etl.keypoints)  # a config error raises, not rejects
     try:
         verified = verify_drive(drive_dir)
     except (OSError, ValueError, RecursionError, MemoryError) as error:
-        message = f"cannot verify the drive: {_short(error, drive_dir)}"
-        raise _Reject([(INTEGRITY, message)]) from error
+        raise _reject(f"cannot verify the drive: {_short(error, drive_dir)}") from error
     if not verified.ok:
         raise _Reject([(INTEGRITY, problem) for problem in verified.problems])
     gate.verified = True
     try:  # built only for a verified drive, and its size is capped above
         lattice = cube_lattice(body.size_cm, body.points_per_axis)
     except (ValueError, MemoryError) as error:
-        message = f"cannot build the lattice: {_short(error, drive_dir)}"
-        raise _Reject([(INTEGRITY, message)]) from error
+        raise _reject(f"cannot build the lattice: {_short(error, drive_dir)}") from error
+    return _Checked(manifest, points_per_frame, frames_expected, lattice)
 
-    frames_path = drive_dir / FRAMES_NAME
+
+def _open_frames_file(drive_dir: Path, frames_expected: int, etl: EtlConfig) -> pa.Schema:
+    """Open frames.parquet, check its footer (_check_footer, row-group size), return its schema."""
     try:
-        with pq.ParquetFile(frames_path) as parquet:
+        with pq.ParquetFile(drive_dir / FRAMES_NAME) as parquet:
             schema = parquet.schema_arrow
             metadata = parquet.metadata
             _check_footer(metadata, frames_expected)
             for group in range(metadata.num_row_groups):
                 mib = metadata.row_group(group).total_byte_size / 2**20
                 if mib > etl.max_row_group_mib:
-                    raise _Reject(
-                        [
-                            (
-                                INTEGRITY,
-                                f"row group {group} holds {mib:.0f} MiB uncompressed, above "
-                                f"max_row_group_mib {etl.max_row_group_mib}",
-                            )
-                        ]
+                    raise _reject(
+                        f"row group {group} holds {mib:.0f} MiB uncompressed, above "
+                        f"max_row_group_mib {etl.max_row_group_mib}"
                     )
     except (OSError, ValueError, MemoryError, pa.ArrowException) as error:
-        message = f"cannot open {FRAMES_NAME}: {_short(error, drive_dir)}"
-        raise _Reject([(INTEGRITY, message)]) from error
+        raise _reject(f"cannot open {FRAMES_NAME}: {_short(error, drive_dir)}") from error
+    return schema
 
+
+def _check_frame_ids(facts: pd.DataFrame, frames_expected: int) -> None:
+    """Raise _Reject if any frame_id is outside 0..frames_expected-1 (frames)."""
+    ids = facts["frame_id"].to_numpy(dtype=np.int64)
+    outside = (ids < 0) | (ids >= frames_expected)
+    if outside.any():
+        first = int(np.flatnonzero(outside)[0])
+        raise _reject(
+            f"{int(outside.sum())} row(s) have a frame_id outside "
+            f"0..{frames_expected - 1}, "
+            f"the first is {int(ids[first])} at row {first}"
+        )
+
+
+def _scan_and_validate(
+    drive_dir: Path, checked: _Checked, schema: pa.Schema, etl: EtlConfig
+) -> _Scanned:
+    """Drive rules, one scan of the frames, frame rules, then keypoints of the kept frames."""
+    manifest = checked.manifest
+    points_per_frame = checked.points_per_frame
+    frames_expected = checked.frames_expected
     ctx = RuleContext(
         facts=pd.DataFrame({name: [] for name in FACT_COLUMNS}),
         schema=schema,
@@ -300,9 +314,7 @@ def _ingest(drive_dir: Path, drive: str, lake: Lake, etl: EtlConfig, gate: _Gate
     try:
         schema_violations = run_rules(ctx, "drive")
     except MemoryError as error:
-        raise _Reject(
-            [(INTEGRITY, f"cannot run the drive rules: {_short(error, drive_dir)}")]
-        ) from error
+        raise _reject(f"cannot run the drive rules: {_short(error, drive_dir)}") from error
     if len(schema_violations):
         raise _Reject(
             [
@@ -313,32 +325,19 @@ def _ingest(drive_dir: Path, drive: str, lake: Lake, etl: EtlConfig, gate: _Gate
             ]
         )
 
+    lattice = checked.lattice
     offsets = (lattice - lattice[0]).astype(np.int32)  # cm
     try:
         facts, keypoints = scan_frames(
-            frames_path,
+            drive_dir / FRAMES_NAME,
             offsets,
             etl.chunk_frames(points_per_frame),
             etl.keypoints,
             _row_cap(frames_expected),
         )
     except (OSError, ValueError, MemoryError, pa.ArrowException) as error:
-        message = f"cannot read {FRAMES_NAME}: {_short(error, drive_dir)}"
-        raise _Reject([(INTEGRITY, message)]) from error
-    ids = facts["frame_id"].to_numpy(dtype=np.int64)
-    outside = (ids < 0) | (ids >= frames_expected)
-    if outside.any():
-        first = int(np.flatnonzero(outside)[0])
-        raise _Reject(
-            [
-                (
-                    INTEGRITY,
-                    f"{int(outside.sum())} row(s) have a frame_id outside "
-                    f"0..{frames_expected - 1}, "
-                    f"the first is {int(ids[first])} at row {first}",
-                )
-            ]
-        )
+        raise _reject(f"cannot read {FRAMES_NAME}: {_short(error, drive_dir)}") from error
+    _check_frame_ids(facts, frames_expected)
 
     try:
         violations = run_rules(replace(ctx, facts=facts), "frame")
@@ -347,27 +346,32 @@ def _ingest(drive_dir: Path, drive: str, lake: Lake, etl: EtlConfig, gate: _Gate
         kept_rows = kept["row_index"].to_numpy(dtype=np.int64)
         keypoint_batches = _keypoint_batches(kept, keypoints[kept_rows], etl)
     except MemoryError as error:
-        message = f"cannot run the frame rules: {_short(error, drive_dir)}"
-        raise _Reject([(INTEGRITY, message)]) from error
-    n_kept = len(kept)
-    n_keypoints = len(etl.keypoints)
+        raise _reject(f"cannot run the frame rules: {_short(error, drive_dir)}") from error
+    return _Scanned(facts, violations, len(kept), keypoint_batches)
 
+
+def _write_ok(
+    lake: Lake, drive: str, etl: EtlConfig, checked: _Checked, scanned: _Scanned
+) -> IngestResult:
+    """Swap keypoints, quarantine and (last) lineage into the lake; return the "ok" result."""
+    facts, violations = scanned.facts, scanned.violations
+    n_keypoints = len(etl.keypoints)
     codes = violations["code"].tolist()
     by_code = {code: codes.count(code) for code in sorted(set(codes))}
     frames_missing = by_code.get("VL-001", 0)
     frames_rejected = int(violations["row_index"].notna().sum())
-    keypoint_rows = n_kept * n_keypoints
+    keypoint_rows = scanned.n_kept * n_keypoints
 
-    lake.swap_partition("keypoints", drive, keypoint_batches)
+    lake.swap_partition("keypoints", drive, scanned.keypoint_batches)
     lake.swap_partition("quarantine", drive, _quarantine_batches(violations))
     lineage = _lineage_batch(
-        manifest,
+        checked.manifest,
         status="ok",
         verified=True,
         counts=(
-            frames_expected,
+            checked.frames_expected,
             len(facts),
-            n_kept,
+            scanned.n_kept,
             frames_rejected,
             frames_missing,
             keypoint_rows,
@@ -377,15 +381,15 @@ def _ingest(drive_dir: Path, drive: str, lake: Lake, etl: EtlConfig, gate: _Gate
     return IngestResult(
         drive=drive,
         status="ok",
-        frames_expected=frames_expected,
+        frames_expected=checked.frames_expected,
         frames_in=len(facts),
-        frames_kept=n_kept,
+        frames_kept=scanned.n_kept,
         frames_rejected=frames_rejected,
         frames_missing=frames_missing,
         keypoint_rows=keypoint_rows,
         quarantine_by_code=by_code,
         frames_quarantined=len(violations),
-        points_per_frame_in=points_per_frame,
+        points_per_frame_in=checked.points_per_frame,
         keypoints_per_frame_out=n_keypoints,
     )
 

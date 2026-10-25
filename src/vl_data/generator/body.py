@@ -3,11 +3,11 @@
 import numpy as np
 from numpy.typing import NDArray
 
-from vl_data.core.schemas import ARROW_BINARY_LIMIT, BYTES_PER_POINT
+from vl_data.core.schemas import ARROW_BINARY_LIMIT, BYTES_PER_POINT, MAX_POINTS_PER_AXIS
 
 _INT32_MIN = float(np.iinfo(np.int32).min)
 _INT32_MAX = float(np.iinfo(np.int32).max)
-_MAX_POINTS_PER_AXIS = 1_000_000  # count; the bound of BodyInfo in the manifest
+_MAX_POINTS_PER_AXIS = MAX_POINTS_PER_AXIS  # count; shared with BodyConfig and BodyInfo
 
 
 def cube_lattice(size_cm: int, points_per_axis: int) -> NDArray[np.int32]:

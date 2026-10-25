@@ -131,29 +131,60 @@ the page answered with HTTP 200 and `/_stcore/health` answered `ok` (measured, l
 `.claude/run-proofs/TASK-7-iter3-server.log`, local, git-ignored, A28). The page has a
 start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`, `seed`; this description of the page comes from the code, not from a browser run), a segment table that starts with the
 demo rows (`type`, `duration_s` in steps of 0.0625 s, `end_speed_cm_s`; rows can be added and
-deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first shows
-a warning such as "This drive has 1000 frames, about 12,000,000,000 bytes (uncompressed point
+deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first works out the target folder (the first 12 characters of the scenario hash under `raw_dir`). If
+that folder already holds a drive that passes the full `verify_drive` check (every file is hashed again, shown in a
+"Checking existing drive..." status block) and whose manifest has the same hash, the tab shows "already generated" with
+the folder, hash and frame count and writes nothing; a folder that fails the check is written again and replaced. Next a
+disk guard compares the size estimate below (frames x bytes per frame, uncompressed, an upper bound; nothing is credited
+back for an existing folder) with the free bytes on the `raw_dir` disk (or its nearest existing parent folder if `raw_dir`
+does not exist yet). If the estimate is larger, the tab shows a red error with both numbers and writes nothing. Otherwise
+it shows a warning such as "This drive has 1000 frames, about 12,000,000,000 bytes (uncompressed point
 data)" (1,000 frames x 12,000,000 bytes at full density, computed; about 12,000 bytes per frame, 12,000,000 bytes for 1,000 frames, at the
 10-points-per-axis test body, computed). It then writes the drive under `raw_dir` with the same function
 the `generate` command uses, and shows the folder, the scenario hash and the frame count. A
-wrong table (a blank cell, a duration that is not a whole number of frames, over 2,000 frames)
-shows a red error and no plot. The tab is tested with Streamlit's test runner
-(`tests/generator/test_ui.py`, 21 tests and 6.09 s, measured in
-`.claude/run-proofs/TASK-7-iter3-ui-tests.log`; the whole suite was 284 tests, 100.00% coverage, measured in `TASK-7-iter3-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
+wrong form or table shows a red error and no plot. A bad cell (blank, text, true/false, not a number, infinite, or a duration
+that is not a whole number of frames) names the segment and the field, for example "segment 0 duration_s must be a finite
+number"; a bad start field names the field ("start x_cm must be a finite number"); a cleared seed says "seed is blank; enter a
+whole number" and a seed that is not a number says "seed must be a whole number"; an empty table or a table over 2,000 frames
+gets its own message. If the target folder is a symbolic link or a plain file, the tab does not call it
+"already generated"; it shows the writer's error and changes nothing (A76). Two Generate clicks
+at the same time for a drive that does not exist yet can still both write (the race is not closed, A79). The tab is tested with Streamlit's test runner
+(`tests/generator/test_ui.py`, 49 tests, 48 passed and 1 skipped, in 10.35 s, measured in
+`.claude/run-proofs/TASK-7-1-1-iter1-ui-tests.log`; the one skip is the real-symlink test, which needs the Windows symbolic-link right
+and has a no-rights stand-in that ran; the whole suite was 332 tests, 331 passed and 1 skipped, 100.00% coverage, measured in `TASK-7-1-1-iter1-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
 by hand is not covered by a test.
 
-Load the drive into the lake (planned, not yet run):
+Load the drive into the lake:
 
 ```powershell
 python -m vl_data ingest data/raw/<hash12>
-python -m vl_data ingest --all data/raw
+python -m vl_data ingest --all data/raw --lake-dir warehouse
 python -m vl_data error-codes --check
+python -m vl_data error-codes --write
 ```
 
-`ingest` prints a summary (frames expected, kept and quarantined, keypoint rows) and exits 0 when
-the drive was loaded and 1 when it was rejected. The lake is queried with DuckDB over
-`warehouse/`. The plan expects `SELECT keypoint, count(*) FROM keypoints GROUP BY 1` to return 9
-keypoints per frame; that has not been run yet.
+`ingest` prints one `key: value` block per drive (drive, status, frames_expected, frames_in,
+frames_kept, frames_quarantined, frames_missing, keypoint_rows, points_per_frame_in,
+keypoints_per_frame_out, one `quarantine_<code>` line per code, elapsed_s). It exits 0 when every
+drive was loaded (quarantined frames are normal), 1 when at least one drive was rejected, 2 on a
+usage or configuration error (with `--all`, drives loaded before the error stay written), and 3
+when at least one drive could not be read or written. `--all` takes only folders named by 12 hex
+characters and prints `skipped: <name>` for anything else (`(link)` for a symlink, which is never
+followed); a single folder must be named the same way. `error-codes --write` and `--check` need
+`--path` outside a source checkout. The lake folder is `--lake-dir`, else
+`VL_LAKE_DIR`, else `lake_dir` in `config/etl.yaml`, else `warehouse`. `error-codes --check` exits
+0 when `docs/ERROR_CODES.md` matches the rule registry; `--write` regenerates it.
+
+What was run (2026-10-25): the command-line and end-to-end tests on the small body (125 points
+per frame, 1,000 frames; `tests/etl/test_cli.py`, `test_errors_doc.py`, `test_e2e.py`, 36 tests),
+which ingest through the root app and query the lake with DuckDB (9 keypoints per frame; each of
+the six faults gives its code in the quarantine view); `python -m vl_data error-codes --write`
+followed by `--check` (exit 0). The full-density command-line run was also done (`generate` to `data/raw_proof`,
+then `ingest --all data/raw_proof --lake-dir warehouse`, `.claude/run-proofs/TASK-5-iter2-a.log`):
+exit 0, `status: ok`, `frames_kept: 1000`, `frames_quarantined: 0`, `keypoint_rows: 9000`,
+`points_per_frame_in: 1000000`, `keypoints_per_frame_out: 9`, `elapsed_s: 43.7`; about 120 s of
+wall-clock time for generate plus ingest (one run, measured). Three tests need an OS or account
+that can create symlinks or odd folder names and were skipped on this machine.
 
 Query and dashboard examples for the use case and the app will be added when Modules 3 and 4
 exist.

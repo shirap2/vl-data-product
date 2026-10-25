@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 
 from vl_data.core.hashing import drive_hash, file_sha256
-from vl_data.core.schemas import SCHEMA_VERSION
+from vl_data.core.schemas import MAX_BODY_SIZE_CM, MAX_POINTS_PER_AXIS, SCHEMA_VERSION
 
 MANIFEST_NAME = "manifest.json"
 
@@ -20,11 +20,11 @@ class FileEntry(BaseModel):
 
 
 class BodyInfo(BaseModel):
-    """The simulated body of a drive: cube edge (size_cm, cm, 1 to 2**31 - 1) and lattice
-    points per axis (count, 1 to 1,000,000); out-of-range values are rejected."""
+    """The simulated body of a drive: cube edge (size_cm, cm, 1 to MAX_BODY_SIZE_CM) and lattice
+    points per axis (count, 1 to MAX_POINTS_PER_AXIS); out-of-range values are rejected."""
 
-    size_cm: int = Field(gt=0, le=2_147_483_647)  # cube edge, cm (int32 range)
-    points_per_axis: int = Field(gt=0, le=1_000_000)  # lattice points per axis (count)
+    size_cm: int = Field(gt=0, le=MAX_BODY_SIZE_CM)  # cube edge, cm (int32 range)
+    points_per_axis: int = Field(gt=0, le=MAX_POINTS_PER_AXIS)  # lattice points per axis (count)
 
 
 class Manifest(BaseModel):

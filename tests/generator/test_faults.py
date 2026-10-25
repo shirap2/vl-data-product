@@ -259,32 +259,105 @@ def test_zero_dx_raises(drive: Drive) -> None:
 
 
 @pytest.mark.parametrize(("frame_id", "sign"), [(0, 1), (FRAME, 1), (FRAME, -1), (47, -1)])
-def test_shift_onto_neighbour_raises(
+def test_shift_of_one_interval_raises(
     drive: Drive, config: Config, frame_id: int, sign: int
 ) -> None:
-    """A shift that makes the timestamp equal a neighbour's is a ValueError."""
+    """A shift of exactly one frame interval (+ or -) is a ValueError (bound message)."""
     delta = sign * config.frame_interval_ns  # ns
-    with pytest.raises(ValueError, match="neighbour"):
+    with pytest.raises(ValueError, match="smaller than one frame interval"):
         inject_faults(drive, [ShiftTimestamp(frame_id, delta)])
 
 
-def test_shift_onto_non_neighbour_raises(drive: Drive, config: Config) -> None:
-    """A shift onto a non-adjacent row's timestamp is a ValueError."""
-    with pytest.raises(ValueError, match="same timestamp"):
-        inject_faults(drive, [ShiftTimestamp(3, 2 * config.frame_interval_ns)])
+@pytest.mark.parametrize("sign", [1, -1])
+def test_shift_just_under_one_interval_works(drive: Drive, config: Config, sign: int) -> None:
+    """A shift of interval - 1 ns (+ or -) is applied."""
+    iv = config.frame_interval_ns  # ns
+    new, counts = inject_faults(drive, [ShiftTimestamp(FRAME, sign * (iv - 1))])
+    assert counts == {"VL-002": 1}
+    assert _col(new, "timestamp_ns")[FRAME] == _col(drive, "timestamp_ns")[FRAME] + sign * (iv - 1)
+
+
+def test_shift_of_one_and_a_half_intervals_raises(drive: Drive, config: Config) -> None:
+    """A shift past a neighbour (1.5 intervals) is a ValueError (bound message)."""
+    with pytest.raises(ValueError, match="smaller than one frame interval") as info:
+        inject_faults(drive, [ShiftTimestamp(3, config.frame_interval_ns * 3 // 2)])
+    assert str(config.frame_interval_ns) in str(info.value)
+
+
+def test_custom_frame_interval_sets_the_bound(drive: Drive) -> None:
+    """The bound uses the frame_interval_ns passed in, not the default."""
+    with pytest.raises(ValueError, match="smaller than one frame interval"):
+        inject_faults(drive, [ShiftTimestamp(FRAME, 1000)], frame_interval_ns=1000)
+    new, _ = inject_faults(drive, [ShiftTimestamp(FRAME, 1000)], frame_interval_ns=1001)
+    assert _col(new, "timestamp_ns")[FRAME] == _col(drive, "timestamp_ns")[FRAME] + 1000
+
+
+@pytest.mark.parametrize("delta", [1.5, 1000.0, True])
+def test_non_int_delta_raises(drive: Drive, delta: object) -> None:
+    """A float or bool delta_ns is a ValueError that names delta_ns."""
+    with pytest.raises(ValueError, match="delta_ns"):
+        inject_faults(drive, [ShiftTimestamp(FRAME, delta)])  # type: ignore[arg-type]
+
+
+def test_two_opposite_shifts_that_swap_rows_raise(drive: Drive, config: Config) -> None:
+    """Frame 4 moved up and frame 5 moved down swap order: a ValueError naming both ids."""
+    step = int(0.6 * config.frame_interval_ns)  # ns
+    with pytest.raises(ValueError, match="strictly increasing") as info:
+        inject_faults(drive, [ShiftTimestamp(4, step), ShiftTimestamp(5, -step)])
+    assert "4" in str(info.value)
+    assert "5" in str(info.value)
 
 
 def test_two_shifts_colliding_raise(drive: Drive, config: Config) -> None:
-    """Two shifts that land on the same timestamp are a ValueError."""
+    """Two shifts that land on the same timestamp are a ValueError (order message)."""
     iv = config.frame_interval_ns
-    with pytest.raises(ValueError, match="same timestamp"):
+    with pytest.raises(ValueError, match="strictly increasing"):
         inject_faults(drive, [ShiftTimestamp(3, iv // 2), ShiftTimestamp(4, -(iv // 2))])
 
 
-def test_shift_onto_duplicated_frame_raises(drive: Drive, config: Config) -> None:
-    """A shift onto the timestamp of a duplicated frame is a ValueError."""
-    with pytest.raises(ValueError, match="same timestamp"):
-        inject_faults(drive, [DuplicateFrame(5), ShiftTimestamp(3, 2 * config.frame_interval_ns)])
+def test_duplicate_with_neighbour_shift_works(drive: Drive, config: Config) -> None:
+    """The copy keeps the original timestamp; the shifted neighbour moves by +interval // 4."""
+    iv = config.frame_interval_ns
+    new, counts = inject_faults(drive, [DuplicateFrame(5), ShiftTimestamp(4, iv // 4)])
+    old_ts, new_ts = _col(drive, "timestamp_ns"), _col(new, "timestamp_ns")
+    ids = _col(new, "frame_id")
+    assert counts == {"VL-003": 1, "VL-002": 1}
+    assert ids[4:7] == [4, 5, 5]
+    assert new_ts[4] == old_ts[4] + iv // 4
+    assert new_ts[5] == new_ts[6] == old_ts[5]
+
+
+def test_drop_with_neighbour_shift_works(drive: Drive, config: Config) -> None:
+    """A shift next to a dropped frame is applied."""
+    iv = config.frame_interval_ns
+    new, counts = inject_faults(drive, [DropFrame(4), ShiftTimestamp(3, iv // 2)])
+    assert counts == {"VL-001": 1, "VL-002": 1}
+    assert _col(new, "timestamp_ns")[3] == _col(drive, "timestamp_ns")[3] + iv // 2
+
+
+def test_two_same_direction_shifts_of_different_size_work(drive: Drive, config: Config) -> None:
+    """Shifts of interval // 2 and interval // 4 on adjacent frames keep the order."""
+    iv = config.frame_interval_ns
+    new, counts = inject_faults(drive, [ShiftTimestamp(4, iv // 2), ShiftTimestamp(5, iv // 4)])
+    old_ts, new_ts = _col(drive, "timestamp_ns"), _col(new, "timestamp_ns")
+    assert counts == {"VL-002": 2}
+    assert new_ts[4] == old_ts[4] + iv // 2
+    assert new_ts[5] == old_ts[5] + iv // 4
+
+
+def test_input_with_duplicate_timestamps_raises_input_message(drive: Drive) -> None:
+    """Equal timestamps on distinct frame_ids in the input are blamed on the input."""
+    frames = drive.frames
+    cols = [frames.column(n).to_pylist() for n in frames.schema.names]
+    ts_index = frames.schema.get_field_index("timestamp_ns")
+    cols[ts_index][FRAME] = cols[ts_index][FRAME - 1]
+    table = pa.Table.from_arrays(
+        [pa.array(c, type=f.type) for c, f in zip(cols, frames.schema, strict=True)],
+        schema=frames.schema,
+    )
+    with pytest.raises(ValueError, match="input") as info:
+        inject_faults(replace(drive, frames=table), [DropFrame(1)])
+    assert "fault" not in str(info.value)
 
 
 def test_valid_pair_of_shifts_works(drive: Drive, config: Config) -> None:
@@ -314,7 +387,7 @@ def test_shift_out_of_int64_raises(drive: Drive) -> None:
 
 def test_teleport_int32_overflow_raises(drive: Drive) -> None:
     """A dx_cm that pushes a coordinate out of int32 is a ValueError."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="int32"):
         inject_faults(drive, [Teleport(FRAME, 2**31)])
 
 
@@ -322,7 +395,7 @@ def test_corrupt_points_on_empty_cell_raises(drive: Drive) -> None:
     """A frame with fewer than 12 bytes of points cannot be corrupted."""
     frames = drive.frames
     cols = [frames.column(n).to_pylist() for n in frames.schema.names]
-    cols[2][FRAME] = b""
+    cols[frames.schema.get_field_index("points")][FRAME] = b""
     table = pa.Table.from_arrays(
         [pa.array(c, type=f.type) for c, f in zip(cols, frames.schema, strict=True)],
         schema=frames.schema,
