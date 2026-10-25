@@ -7,30 +7,50 @@ notes. It is built from `docs/ERROR_CODES.md`, `docs/ARCHITECTURE.md` and
 
 ## 1. Error codes
 
-Draft. The six codes below are agreed. Module 2 (the loader and ETL) owns the rules, and this
-file will be regenerated from its rule registry so it cannot drift from the code. Until then
-the "How it is detected" column describes the intended rule, not shipped code.
+This file is generated from the rule registry in `src/vl_data/etl/rules.py` by
+`python -m vl_data error-codes --write`. Do not edit it by hand: a test fails if it drifts from
+the code.
 
-A frame that fails a rule is moved to the quarantine table with its code. Valid frames
-continue through the pipeline.
+A frame that fails a frame rule is moved to the quarantine table with its code, and valid frames
+continue through the pipeline. A drive-level problem rejects the whole drive. Timestamps and
+frame counts in the rules come from the drive itself (its manifest), so the wording below holds
+at any point density and frame rate.
+
+### The six rule codes
 
 | Code | Name | What it means | How it is detected | Example fault used in tests |
 |---|---|---|---|---|
-| VL-001 | Missing frame | A frame number is absent from the sequence. | A number from 0 to the expected frame count minus 1 has no row. The expected count comes from the scenario in the manifest, not from `manifest.frame_count`. One quarantine row per missing number. | `DropFrame(frame_id)` |
-| VL-002 | Timestamp gap | A frame's timestamp is not what its frame number implies. | The timestamp is not `frame_id x 62,500,000 ns`. | `ShiftTimestamp(frame_id, delta_ns)` |
-| VL-003 | Duplicate frame | The same frame number appears more than once. | A repeated `frame_id`. Identical copies keep the first and quarantine the repeats; differing copies are all quarantined. | `DuplicateFrame(frame_id)` |
-| VL-004 | Corrupt point cloud | A frame's points are not a valid 1,000-point cube. | The payload is not a multiple of 12 bytes, does not hold the drive's points per frame (12,000,000 bytes at the shipped density), or a point is more than rounding away from the expected lattice (per axis the offsets may spread by at most 1 cm). | `CorruptPoints(frame_id)` |
-| VL-005 | Schema mismatch | The table does not have the expected columns and types. | The schema differs from the frames schema. Rejects the whole drive. | `BreakSchema()` |
-| VL-006 | Impossible motion | The distance moved between two frames is beyond what the vehicle can do. | The centroid is farther from the last accepted frame than the configured maximum speed allows (scaled by the frame gap, plus a rounding margin). The starting frame is the earlier frame of the most tightly agreeing pair among the first three clean frames. Acceleration is not tested. | `Teleport(frame_id, dx_cm)` |
+| VL-001 | Missing frame | A frame_id between 0 and frame_count - 1 has no row in the frames file. | Every id in range(frame_count) that is absent from the frame_id column. | `DropFrame(frame_id)` |
+| VL-002 | Timestamp gap | A frame's timestamp is not frame_id times the frame interval. | timestamp_ns differs from frame_id * frame_interval_ns, checked per row. | `ShiftTimestamp(frame_id, delta_ns)` |
+| VL-003 | Duplicate frame | More than one row carries the same frame_id. | Rows are grouped by frame_id. If all rows of a group have the same timestamp and payload hash, the first is kept and the repeats are flagged; otherwise every row of the group is flagged. | `DuplicateFrame(frame_id)` |
+| VL-004 | Corrupt point cloud | A frame's points are not the expected body: wrong length, count or shape. | The payload must be a multiple of 12 bytes, decode to points_per_frame points, and each axis of (points - expected lattice) must spread at most 1 cm. | `CorruptPoints(frame_id)` |
+| VL-005 | Schema mismatch | The frames file does not have the columns and types of the frames schema. | Rejects the whole drive. The file schema (metadata ignored) is compared with the frames schema. | `BreakSchema()` |
+| VL-006 | Impossible motion | The body moved farther between frames than the speed limit allows. | Among frames with no other violation, in frame_id order, a centroid farther from the last accepted centroid than max_speed * frame_gap / fps + margin is flagged and never becomes the baseline. | `Teleport(frame_id, dx_cm)` |
 
 ### Integrity errors (outside the VL codes)
 
-The manifest check runs before any frame is read. It reports a changed file, a missing file,
-or an extra file, and the load stops. The same applies to an unreadable manifest, an unsupported
-schema version, a folder name that does not match the manifest hash, and a frame number outside
-0 to `frame_count - 1`. These are not frame-level errors, so they have no VL code. They are
-written to the quarantine table as one drive-level row each with the code `INTEGRITY`, and the
-drive is marked `rejected` in the lineage table.
+The manifest check runs before any frame is read. These problems are not frame-level errors, so
+they have no VL code. Each is written to the quarantine table as a drive-level row (no frame_id,
+no row_index) with the code `INTEGRITY`, and the drive is marked `rejected` in the lineage table.
+The drive's keypoints are removed. The causes are:
+
+- An unreadable manifest: missing, not valid JSON, invalid, or a schema-1 manifest without a body.
+- A folder name that is not the first 12 hex characters of `scenario_hash`.
+- A malformed `scenario_hash` (not 64 lowercase hex characters).
+- An unsupported schema version (see `supported_schema_versions` in `config/etl.yaml`).
+- A frame rate (fps) that is below 1 or does not divide 1,000,000,000 ns evenly.
+- `frames.parquet` not listed in the manifest.
+- Points per frame above `max_points_per_frame`.
+- An invalid body or scenario in the manifest.
+- Hash or size problems found by the manifest check: a changed, missing or extra file.
+- An unreadable or implausible frames file: not Parquet, a footer that claims too many rows, or a
+  row group above `max_row_group_mib`.
+- A null frame number or timestamp in the frames file.
+- A frame number outside 0 to the expected frame count minus 1.
+
+At most 20 problems are stored per drive; when there are more, one extra row says
+"and K more problems". A frames file that reads fine but has the wrong columns or types is
+VL-005, not INTEGRITY.
 
 ### Generator-side limits
 
@@ -80,12 +100,12 @@ src/vl_data/
   core/                      config, hashing, schemas, manifest
   generator/                 Module 1: models, body, motion, drive, writer,
                              inverse, faults, cli, scenarios/, ui/
-  etl/                       Module 2 (planned): config, keypoints, facts, rules,
+  etl/                       Module 2 (built): config, keypoints, facts, rules,
                              ingest, errors_doc, cli
   core/lake.py, lake_schemas.py   Module 2 (built): the Lake class and the table schemas
 config/default.yaml          fps, output folder, body, tolerances, fit parameters
-config/etl.yaml              Module 2 (planned): keypoint list, speed limit, chunk size
-warehouse/                   the lake (planned, git-ignored)
+config/etl.yaml              Module 2 (built): keypoint list, speed limit, chunk size
+warehouse/                   the lake (built, git-ignored)
 tests/                       mirrors the source folders
 docs/                        this file and the other documents
 data/raw/<hash12>/           generated drives (git-ignored)
@@ -139,9 +159,9 @@ Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 | `frames.parquet` | raw drive | frame_id, timestamp_ns, points (1,000,000 x 3 int32 = 12,000,000 bytes at the shipped density, one binary column) |
 | `ground_truth.parquet` | raw drive | frame_id, timestamp_ns, x_cm, velocity_cm_s, acceleration_cm_s2 |
 | `manifest.json` | raw drive | schema version 2, drive hash, scenario, body (`size_cm`, `points_per_axis`), fps, counts, SHA-256 and size of each file |
-| keypoints | bronze (planned) | one row per keypoint: frame_id, timestamp_ns, keypoint name, x, y, z (cm, float64); 9 rows per frame |
-| quarantine | bronze (planned) | one row per rejected frame or missing frame number: frame_id, row_index, code, message; a drive-level row has no frame_id |
-| lineage | bronze (planned) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames and ground-truth file hashes |
+| keypoints | bronze (built) | one row per keypoint: frame_id, timestamp_ns, keypoint name, x, y, z (cm, float64); 9 rows per frame |
+| quarantine | bronze (built) | one row per rejected frame or missing frame number: frame_id, row_index, code, message; a drive-level row has no frame_id |
+| lineage | bronze (built) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames and ground-truth file hashes |
 | motion | silver (planned) | per-frame x, velocity, acceleration |
 | evaluation tables | gold (planned) | errors against ground truth |
 
@@ -170,14 +190,46 @@ What the Lake does not do:
 - The glob characters `*` and `?` in the lake path could only be tested on non-Windows systems, because Windows does not allow them in file names.
 - Symlinks or junctions planted inside the lake folder are not detected.
 
-### Module 2: loader and ETL (ingest built and measured at full density; command line and error-code file still to do)
+### Module 2: loader and ETL (ingest, command line and error-code file built; full-density command-line run is the user's proof)
 
 The lake storage (`core/lake.py`, `core/lake_schemas.py`), the ETL settings, the keypoint pick, the
-frame scan, the rules and the ingest (`etl/ingest.py`) are built and tested. The `ingest` command,
-the error-code document are not done yet.
+frame scan, the rules, the ingest (`etl/ingest.py`), the commands (`etl/cli.py`) and the
+error-code document generator (`etl/errors_doc.py`) are built and tested on the small body.
 
-Measured full-density numbers (all measured on 2026-10-25 on one machine, demo drive `bf394b9bfb42`,
-1,000 frames of 1,000,000 points, row groups of 50 frames): the latest run took 44.7 s for the
+#### Command line (built)
+
+`etl/cli.py` registers two commands on the root app (`python -m vl_data`). Data flow: `ingest`
+loads the ETL config (`load_etl_config`, never the core config), opens the lake, calls
+`ingest_drive` for each drive folder and prints a `key: value` summary per drive (drive, status,
+frames_expected, frames_in, frames_kept, frames_quarantined, frames_missing, keypoint_rows,
+points_per_frame_in, keypoints_per_frame_out, one `quarantine_<code>` line per code, elapsed_s).
+It prints codes and counts only, never quarantine message text.
+
+Measured (2026-10-25, one Windows machine, `.claude/run-proofs/TASK-5-iter2-a.log`): `generate` of the 1,000-frame demo at 1,000,000 points per frame into `data/raw_proof`, then `ingest --all data/raw_proof --lake-dir warehouse`, took about 120 s of wall-clock time in total (start and finish times in the log). The ingest printed `status: ok`, `frames_expected: 1000`, `frames_kept: 1000`, `frames_quarantined: 0`, `keypoint_rows: 9000`, `points_per_frame_in: 1000000`, `keypoints_per_frame_out: 9` and `elapsed_s: 43.7`, and exited 0. One run, so it is a single measurement.
+
+- `ingest <drive_dir>` or `ingest --all <raw_dir>` (exactly one of the two). `--all` takes only
+  direct subfolders named by 12 lowercase hex characters, sorted; anything else prints
+  `skipped: <name>`.
+- The lake root is `--lake-dir`, else `VL_LAKE_DIR`, else `lake_dir` in `config/etl.yaml`, else
+  `warehouse`.
+- Exit codes: 0 = every drive ingested (quarantined frames are normal); 1 = at least one drive
+  rejected (`--all` still ingests every drive first); 2 = usage or configuration error (both or
+  neither target, a path that is not a folder, a single folder not named by 12 lowercase hex
+  characters, no drive folders under `--all`, a keypoint spec that does not fit the body, an
+  unreadable ETL config); 3 = at least one drive could not be read or written (an `OSError`;
+  with `--all` the other drives are still ingested and the exit code is the highest of 3, 1, 0).
+  A usage error found before any drive is ingested writes nothing. With `--all`, a keypoint-spec
+  error (or another `ValueError` from `ingest_drive`) aborts at the drive where it is found, and the
+  drives ingested before it stay written.
+- `--all` never follows a symlink or junction (`skipped: <name> (link)`). Every name or text from
+  outside that is printed passes the filter `_safe` (only 0x20 to 0x7e, cut to 64 characters).
+- `error-codes` prints `render_error_codes()`; `--write` saves `docs/ERROR_CODES.md` (UTF-8, LF);
+  `--check` exits 1 if the file differs (compared after CRLF to LF) or is missing; both flags exit
+  2; `--path` picks another file, and is required outside a source checkout. `docs/ERROR_CODES.md`
+  is built from the rule registry plus static text; a test fails if it drifts from the code.
+
+ingest_drive measured earlier (not the command-line run). All measured on 2026-10-25 on one machine,
+demo drive `bf394b9bfb42`, 1,000 frames of 1,000,000 points, row groups of 50 frames: the latest run took 44.7 s for the
 first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB
 (log `.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and
 1,718 MiB (`.claude/run-proofs/TASK-4-measure.log`). One first run in
@@ -327,7 +379,7 @@ whole centimetres.
 | Validation | Rule registry with error codes | Explicit and testable; the same registry builds the error-code document | Great Expectations, pandera | Many datasets and owners |
 | Keypoint table layout (planned) | Long: one row per keypoint | Generic; the keypoint list is a YAML change; simple SQL filter by name | Wide: 27 coordinate columns per frame | Heavy column maths on the corners |
 | Bad frames (planned) | Quarantine only the failed frame, with a details-only row | One bad frame does not cost the drive; the raw frame stays in `data/raw/` | Reject the whole drive; copy the raw bytes | A consumer needs replay from the lake alone |
-| Ingest passes (planned) | Two chunked passes: facts, then keypoints | Bounded memory, and rules see the whole sequence | One pass holding the drive in memory; Spark | Drives no longer fit one machine |
+| Ingest passes | One chunked pass: facts and keypoints together (user decision 2026-10-25) | Bounded memory, rules see the whole sequence from the facts, and the frames file is decoded once instead of twice | Two passes: facts, then keypoints | A rule needs cloud data that the stored facts do not hold |
 | BI | Streamlit and Plotly | One Python file per view | Superset, Grafana | Non-Python users |
 | CLI | Typer | Typed commands | argparse | None |
 | Tests | pytest and hypothesis | Property tests suit a two-way check | unittest | None |
@@ -594,18 +646,37 @@ shows a red error and no plot. The tab is tested with Streamlit's test runner
 `.claude/run-proofs/TASK-7-iter3-ui-tests.log`; the whole suite was 284 tests, 100.00% coverage, measured in `TASK-7-iter3-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
 by hand is not covered by a test.
 
-Load the drive into the lake (planned, not yet run):
+Load the drive into the lake:
 
 ```powershell
 python -m vl_data ingest data/raw/<hash12>
-python -m vl_data ingest --all data/raw
+python -m vl_data ingest --all data/raw --lake-dir warehouse
 python -m vl_data error-codes --check
+python -m vl_data error-codes --write
 ```
 
-`ingest` prints a summary (frames expected, kept and quarantined, keypoint rows) and exits 0 when
-the drive was loaded and 1 when it was rejected. The lake is queried with DuckDB over
-`warehouse/`. The plan expects `SELECT keypoint, count(*) FROM keypoints GROUP BY 1` to return 9
-keypoints per frame; that has not been run yet.
+`ingest` prints one `key: value` block per drive (drive, status, frames_expected, frames_in,
+frames_kept, frames_quarantined, frames_missing, keypoint_rows, points_per_frame_in,
+keypoints_per_frame_out, one `quarantine_<code>` line per code, elapsed_s). It exits 0 when every
+drive was loaded (quarantined frames are normal), 1 when at least one drive was rejected, 2 on a
+usage or configuration error (with `--all`, drives loaded before the error stay written), and 3
+when at least one drive could not be read or written. `--all` takes only folders named by 12 hex
+characters and prints `skipped: <name>` for anything else (`(link)` for a symlink, which is never
+followed); a single folder must be named the same way. `error-codes --write` and `--check` need
+`--path` outside a source checkout. The lake folder is `--lake-dir`, else
+`VL_LAKE_DIR`, else `lake_dir` in `config/etl.yaml`, else `warehouse`. `error-codes --check` exits
+0 when `docs/ERROR_CODES.md` matches the rule registry; `--write` regenerates it.
+
+What was run (2026-10-25): the command-line and end-to-end tests on the small body (125 points
+per frame, 1,000 frames; `tests/etl/test_cli.py`, `test_errors_doc.py`, `test_e2e.py`, 36 tests),
+which ingest through the root app and query the lake with DuckDB (9 keypoints per frame; each of
+the six faults gives its code in the quarantine view); `python -m vl_data error-codes --write`
+followed by `--check` (exit 0). The full-density command-line run was also done (`generate` to `data/raw_proof`,
+then `ingest --all data/raw_proof --lake-dir warehouse`, `.claude/run-proofs/TASK-5-iter2-a.log`):
+exit 0, `status: ok`, `frames_kept: 1000`, `frames_quarantined: 0`, `keypoint_rows: 9000`,
+`points_per_frame_in: 1000000`, `keypoints_per_frame_out: 9`, `elapsed_s: 43.7`; about 120 s of
+wall-clock time for generate plus ingest (one run, measured). Three tests need an OS or account
+that can create symlinks or odd folder names and were skipped on this machine.
 
 Query and dashboard examples for the use case and the app will be added when Modules 3 and 4
 exist.

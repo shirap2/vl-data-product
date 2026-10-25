@@ -142,18 +142,37 @@ shows a red error and no plot. The tab is tested with Streamlit's test runner
 `.claude/run-proofs/TASK-7-iter3-ui-tests.log`; the whole suite was 284 tests, 100.00% coverage, measured in `TASK-7-iter3-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
 by hand is not covered by a test.
 
-Load the drive into the lake (planned, not yet run):
+Load the drive into the lake:
 
 ```powershell
 python -m vl_data ingest data/raw/<hash12>
-python -m vl_data ingest --all data/raw
+python -m vl_data ingest --all data/raw --lake-dir warehouse
 python -m vl_data error-codes --check
+python -m vl_data error-codes --write
 ```
 
-`ingest` prints a summary (frames expected, kept and quarantined, keypoint rows) and exits 0 when
-the drive was loaded and 1 when it was rejected. The lake is queried with DuckDB over
-`warehouse/`. The plan expects `SELECT keypoint, count(*) FROM keypoints GROUP BY 1` to return 9
-keypoints per frame; that has not been run yet.
+`ingest` prints one `key: value` block per drive (drive, status, frames_expected, frames_in,
+frames_kept, frames_quarantined, frames_missing, keypoint_rows, points_per_frame_in,
+keypoints_per_frame_out, one `quarantine_<code>` line per code, elapsed_s). It exits 0 when every
+drive was loaded (quarantined frames are normal), 1 when at least one drive was rejected, 2 on a
+usage or configuration error (with `--all`, drives loaded before the error stay written), and 3
+when at least one drive could not be read or written. `--all` takes only folders named by 12 hex
+characters and prints `skipped: <name>` for anything else (`(link)` for a symlink, which is never
+followed); a single folder must be named the same way. `error-codes --write` and `--check` need
+`--path` outside a source checkout. The lake folder is `--lake-dir`, else
+`VL_LAKE_DIR`, else `lake_dir` in `config/etl.yaml`, else `warehouse`. `error-codes --check` exits
+0 when `docs/ERROR_CODES.md` matches the rule registry; `--write` regenerates it.
+
+What was run (2026-10-25): the command-line and end-to-end tests on the small body (125 points
+per frame, 1,000 frames; `tests/etl/test_cli.py`, `test_errors_doc.py`, `test_e2e.py`, 36 tests),
+which ingest through the root app and query the lake with DuckDB (9 keypoints per frame; each of
+the six faults gives its code in the quarantine view); `python -m vl_data error-codes --write`
+followed by `--check` (exit 0). The full-density command-line run was also done (`generate` to `data/raw_proof`,
+then `ingest --all data/raw_proof --lake-dir warehouse`, `.claude/run-proofs/TASK-5-iter2-a.log`):
+exit 0, `status: ok`, `frames_kept: 1000`, `frames_quarantined: 0`, `keypoint_rows: 9000`,
+`points_per_frame_in: 1000000`, `keypoints_per_frame_out: 9`, `elapsed_s: 43.7`; about 120 s of
+wall-clock time for generate plus ingest (one run, measured). Three tests need an OS or account
+that can create symlinks or odd folder names and were skipped on this machine.
 
 Query and dashboard examples for the use case and the app will be added when Modules 3 and 4
 exist.
