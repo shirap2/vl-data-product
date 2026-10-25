@@ -128,8 +128,8 @@ DECISIONS LOG (plan-loop for Module 1, 2026-10-23)
 - Start speed: scenario start block has speed, default 0 (the drive starts at rest).
 - Durations: seconds, validated to whole frames.
 
-MEASURED (before the full-density change; throwaway script, 1000-frame demo, 10x10x10
-integer lattice, float positions
+MEASURED ON THE 10x10x10 LATTICE, BEFORE THE FULL-DENSITY CHANGE (history; NOT re-measured at
+full density; throwaway script, 1000-frame demo, 10x10x10 integer lattice, float positions
 rounded with rint; planar variant, 1-D numbers re-measured in the plan)
 - Position error max 0.66 cm (bound 0.87 cm). Speed error per frame max 17.6 cm/s (bound
   22.6). Acceleration error per frame max 462 cm/s^2 (bound 724), larger than a -150 cm/s^2
@@ -149,21 +149,31 @@ FULL DENSITY (user decision, 2026-10-24)
   999,999 (compute them from cube_lattice, do not hard-code). Module 2 picks keypoints by
   these indices; VL-004 (one point removed) is 999,999 points = 11,999,988 bytes.
 - Storage: zstd instead of snappy (a 2-frame test: snappy 8,048,769 bytes, zstd 549,552
-  bytes; to be repeated on a real drive). One Arrow binary array holds at most
+  bytes). Repeated on the real 1,000-frame demo drive (2026-10-24, measured):
+  snappy 4,024,944,648 bytes, zstd 287,134,433 bytes for frames.parquet. One Arrow binary
+  array holds at most
   2,147,483,647 bytes = 178 full frames, so frames are built and written in batches of
   about 50 frames and streamed to the parquet file (row groups of about 50 rows). The
-  in-memory generate() stays for small drives and tests.
-- Demo: keep the 1,000-frame demo at full density (about 12 GB raw, calculated). Time,
-  peak memory and size on disk are measured first; if unacceptable, the user decides.
+  in-memory generate() and write_drive stay for small drives and tests; they refuse a drive
+  over 1 GiB of points (MAX_IN_MEMORY_BYTES, more than 89 frames at full density), and
+  generate_to_disk (the CLI and the Generate tab) streams without that limit.
+- Demo: keep the 1,000-frame demo at full density (about 12 GB raw, computed: 1,000 frames
+  x 12,000,000 bytes; a scenario may have at most 2,000 frames, about 24 GB raw). Measured
+  2026-10-24: 75.1 s, peak working set 2,859 MiB (scratch script); the generate command took
+  81 s (source: .claude/run-proofs/FULL-DENSITY-iter2.log); the fresh-clone time of
+  2026-10-25 is in RELEASE_NOTES, Usage.
 - Hash: the body (size_cm, points_per_axis) joins the scenario hash, so each density has
-  its own hash and folder. This changes the demo hash (c8f597af59a6 today). Core files that
+  its own hash and folder. This changed the demo hash (it was c8f597af59a6 before the change; now bf394b9bfb42). Core files that
   Module 2 and 3 import are changed only after agreeing with the Module 2 session.
 - infer_scenario also recovers start y and z from the frames.
 - Manifest: Module 2 asked for a self-describing manifest (body size_cm and points_per_axis;
-  key names not decided yet). schema_version becomes 2 if the layout changes.
+  key names were not decided then). Done: schema_version 2 with a body block (size_cm,
+  points_per_axis).
 - Tests use a small-lattice config (10 per side) except tests of the full density.
-- Tolerances in the MEASURED block were measured on the 10x10x10 lattice and are re-checked
-  at full density. The task file is .claude/plans/followups/full-density.md; it runs after
+- Tolerances in the MEASURED block were measured on the 10x10x10 lattice. At full density the
+  roundtrip command (2026-10-25, fresh clone) printed boundary error 4 frames, duration error
+  5 frames and end-speed error 24.4 cm/s, within the limits; the position and velocity errors
+  were not re-measured there. The task file is .claude/plans/followups/full-density.md; it runs after
   TASK-6 (fault injection) and before TASK-7 (Generate tab).
 
 STILL OPEN
@@ -172,12 +182,15 @@ STILL OPEN
 OTHER SESSIONS
 - A Module 2 (Loader/ETL) session works in worktree-module2-loader-etl. It was told on
   2026-10-23 that the generator contract (frames.parquet Arrow schema, manifest key names,
-  fault-injection helper, core/ path) is NOT final and will be sent after plan approval.
+  fault-injection helper, core/ path) was not final. Built and committed on 2026-10-25: manifest
+  schema_version 2 with the body block, the drive layout and the fault helper; the Module 2
+  session merged it up to commit 0c189cd on 2026-10-25 and reported its own suite passing (its
+  report, not verified here; the body-block design was agreed on 2026-10-24, see A64).
 
 LLM USAGE TRACKING
 - tools/llm_usage.py install was run on 2026-10-23. The raw log .claude/llm-usage/ is
   git-ignored. Only main prompts are logged (slash commands and prompts of 8+ words).
 
 NEXT STEPS
-1. Finish plan-loop for Module 1 (data generator).
+1. Module 1 (data generator) is built and committed (see git log).
 2. plan-loop + implement-loop per module after that.
