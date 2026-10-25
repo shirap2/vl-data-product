@@ -647,11 +647,16 @@ it shows a warning such as "This drive has 1000 frames, about 12,000,000,000 byt
 data)" (1,000 frames x 12,000,000 bytes at full density, computed; about 12,000 bytes per frame, 12,000,000 bytes for 1,000 frames, at the
 10-points-per-axis test body, computed). It then writes the drive under `raw_dir` with the same function
 the `generate` command uses, and shows the folder, the scenario hash and the frame count. A
-wrong table (a blank cell, a duration that is not a whole number of frames, over 2,000 frames)
-(also an infinite or true/false cell, or a cleared seed) shows a red error naming the row and no plot. Two Generate clicks
+wrong form or table shows a red error and no plot. A bad cell (blank, text, true/false, not a number, infinite, or a duration
+that is not a whole number of frames) names the segment and the field, for example "segment 0 duration_s must be a finite
+number"; a bad start field names the field ("start x_cm must be a finite number"); a cleared seed says "seed is blank; enter a
+whole number" and a seed that is not a number says "seed must be a whole number"; an empty table or a table over 2,000 frames
+gets its own message. If the target folder is a symbolic link or a plain file, the tab does not call it
+"already generated"; it shows the writer's error and changes nothing (A76). Two Generate clicks
 at the same time for a drive that does not exist yet can still both write (the race is not closed, A79). The tab is tested with Streamlit's test runner
-(`tests/generator/test_ui.py`, 42 tests and 7.55 s, measured in
-`.claude/run-proofs/TASK-7-1-iter2-ui-tests.log`; the whole suite was 305 tests, 100.00% coverage, measured in `TASK-7-1-iter2-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
+(`tests/generator/test_ui.py`, 49 tests, 48 passed and 1 skipped, in 10.35 s, measured in
+`.claude/run-proofs/TASK-7-1-1-iter1-ui-tests.log`; the one skip is the real-symlink test, which needs the Windows symbolic-link right
+and has a no-rights stand-in that ran; the whole suite was 332 tests, 331 passed and 1 skipped, 100.00% coverage, measured in `TASK-7-1-1-iter1-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
 by hand is not covered by a test.
 
 Load the drive into the lake:

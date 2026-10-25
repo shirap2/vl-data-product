@@ -10,6 +10,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from vl_data.core.schemas import MAX_BODY_SIZE_CM, MAX_POINTS_PER_AXIS
+
 NS_PER_SECOND = 1_000_000_000
 
 # Default config file of a source checkout: <repo root>/config/default.yaml.
@@ -21,11 +23,23 @@ class BodyConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # The upper bounds mirror BodyInfo in the manifest (core.manifest): size_cm up to the int32
-    # range (cm), points_per_axis up to 1,000,000 (count). cube_lattice still refuses a
-    # points_per_axis above size_cm and a frame of 2**31 bytes or more (A65).
-    size_cm: int = Field(default=100, gt=0, le=2_147_483_647)  # cube edge, cm
-    points_per_axis: int = Field(default=100, ge=2, le=1_000_000)  # lattice points per axis
+    # The upper bounds are the shared constants of core.schemas, the same as BodyInfo in the
+    # manifest: size_cm up to MAX_BODY_SIZE_CM (cm), points_per_axis up to MAX_POINTS_PER_AXIS
+    # (count). points_per_axis above size_cm is rejected here at load time; a frame of 2**31
+    # bytes or more (563 points per axis single frame, 152 for a 50-frame batch) can still be
+    # refused at generate time (A65).
+    size_cm: int = Field(default=100, gt=0, le=MAX_BODY_SIZE_CM)  # cube edge, cm
+    points_per_axis: int = Field(default=100, ge=2, le=MAX_POINTS_PER_AXIS)  # points per axis
+
+    @model_validator(mode="after")
+    def _points_not_above_size(self) -> "BodyConfig":
+        """Reject points_per_axis (count) above size_cm (cm): lattice values would repeat."""
+        if self.points_per_axis > self.size_cm:
+            raise ValueError(
+                f"points_per_axis {self.points_per_axis} > size_cm {self.size_cm} "
+                "would give repeated points"
+            )
+        return self
 
 
 class ToleranceConfig(BaseModel):
