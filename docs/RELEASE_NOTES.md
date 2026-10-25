@@ -131,15 +131,22 @@ the page answered with HTTP 200 and `/_stcore/health` answered `ok` (measured, l
 `.claude/run-proofs/TASK-7-iter3-server.log`, local, git-ignored, A28). The page has a
 start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`, `seed`; this description of the page comes from the code, not from a browser run), a segment table that starts with the
 demo rows (`type`, `duration_s` in steps of 0.0625 s, `end_speed_cm_s`; rows can be added and
-deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first shows
-a warning such as "This drive has 1000 frames, about 12,000,000,000 bytes (uncompressed point
+deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first works out the target folder (the first 12 characters of the scenario hash under `raw_dir`). If
+that folder already holds a drive that passes the full `verify_drive` check (every file is hashed again, shown in a
+"Checking existing drive..." status block) and whose manifest has the same hash, the tab shows "already generated" with
+the folder, hash and frame count and writes nothing; a folder that fails the check is written again and replaced. Next a
+disk guard compares the size estimate below (frames x bytes per frame, uncompressed, an upper bound; nothing is credited
+back for an existing folder) with the free bytes on the `raw_dir` disk (or its nearest existing parent folder if `raw_dir`
+does not exist yet). If the estimate is larger, the tab shows a red error with both numbers and writes nothing. Otherwise
+it shows a warning such as "This drive has 1000 frames, about 12,000,000,000 bytes (uncompressed point
 data)" (1,000 frames x 12,000,000 bytes at full density, computed; about 12,000 bytes per frame, 12,000,000 bytes for 1,000 frames, at the
 10-points-per-axis test body, computed). It then writes the drive under `raw_dir` with the same function
 the `generate` command uses, and shows the folder, the scenario hash and the frame count. A
 wrong table (a blank cell, a duration that is not a whole number of frames, over 2,000 frames)
-shows a red error and no plot. The tab is tested with Streamlit's test runner
-(`tests/generator/test_ui.py`, 21 tests and 6.09 s, measured in
-`.claude/run-proofs/TASK-7-iter3-ui-tests.log`; the whole suite was 284 tests, 100.00% coverage, measured in `TASK-7-iter3-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
+(also an infinite or true/false cell, or a cleared seed) shows a red error naming the row and no plot. Two Generate clicks
+at the same time for a drive that does not exist yet can still both write (the race is not closed, A79). The tab is tested with Streamlit's test runner
+(`tests/generator/test_ui.py`, 42 tests and 7.55 s, measured in
+`.claude/run-proofs/TASK-7-1-iter2-ui-tests.log`; the whole suite was 305 tests, 100.00% coverage, measured in `TASK-7-1-iter2-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
 by hand is not covered by a test.
 
 Load the drive into the lake:
