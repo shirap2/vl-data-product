@@ -76,16 +76,30 @@ def test_vl001_two_missing_two_rows(write_faulty: WriteFaulty, make_ctx: MakeCtx
     assert _pairs(out) == [("VL-001", 100), ("VL-001", 500)]
 
 
-def test_vl002_shifted_timestamp(write_faulty: WriteFaulty, make_ctx: MakeCtx) -> None:
+def _shifted_table(drive: Drive, frame_id: int, delta_ns: int) -> pa.Table:
+    """The clean frames table with one timestamp moved by delta_ns (ns), built by hand.
+
+    inject_faults refuses shifts of one frame interval or more, but VL-002 must still flag them.
+    """
+    timestamps = drive.frames.column("timestamp_ns").to_numpy().copy()
+    timestamps[frame_id] += delta_ns
+    index = drive.frames.schema.get_field_index("timestamp_ns")
+    column = pa.array(timestamps, type=drive.frames.schema.field(index).type)
+    return drive.frames.set_column(index, "timestamp_ns", column)
+
+
+def test_vl002_shifted_timestamp(
+    write_faulty: WriteFaulty, make_ctx: MakeCtx, clean_drive: Drive
+) -> None:
     out = _frame_scope(write_faulty, make_ctx, [ShiftTimestamp(200, 1_000_000)])
     assert _pairs(out) == [("VL-002", 200)]
     assert out.loc[0, "row_index"] == 200
     # a shift of more than five frame intervals puts the row after later frames in time
     big = 5 * 62_500_000 + 7
-    out = _frame_scope(write_faulty, make_ctx, [ShiftTimestamp(200, big)])
-    assert _pairs(out) == [("VL-002", 200)]
-    out = _frame_scope(write_faulty, make_ctx, [ShiftTimestamp(200, -big)])
-    assert _pairs(out) == [("VL-002", 200)]
+    for delta in (big, -big):
+        table = _shifted_table(clean_drive, 200, delta)
+        out = run_rules(make_ctx(write_faulty(table=table)), "frame")
+        assert _pairs(out) == [("VL-002", 200)]
 
 
 def test_rows_out_of_order_not_flagged(
