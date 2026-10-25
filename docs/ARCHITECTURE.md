@@ -324,6 +324,21 @@ version) reject the whole drive, as does VL-005. A rejected drive gets one drive
 row, a lineage row with status `rejected`, and no keypoints. Frame errors VL-001 to VL-004 and
 VL-006 send only the failed frame to quarantine. See [ERROR_CODES.md](ERROR_CODES.md).
 
+## Module 3: motion use case (in progress)
+
+`vl_data.sdk.VLClient(lake: Lake)` is the read-only way to the lake. `drives() -> list[str]`
+lists the drives that have keypoints. `keypoints(drive, keypoint=None)`, `motion(drive)`,
+`lineage(drive)` and `quarantine(drive)` return Arrow tables with exactly the table schema
+(no `drive` column); keypoints are ordered by `frame_id`, then keypoint name. A valid unknown
+drive gives an empty table; an invalid drive id (for example `a/b` or empty) raises
+`ValueError` from the Lake. `sql(query) -> pa.Table` runs one SELECT over the table views (which do have a `drive`
+column) and closes its DuckDB connection after every query. The SDK never opens ground truth.
+
+The `motion` table (`MOTION_SCHEMA`) has one row per frame: `frame_id` int64, `timestamp_ns`
+int64, `x_cm` float64, `velocity_cm_s` float64 (null where there is no estimate),
+`acceleration_cm_s2` float64 (null likewise) and `n_points` int32 (samples in the estimator
+window). The parameter sweep table is added with the sweep task.
+
 ## Storage math
 
 A full-density frame is 100 x 100 x 100 = 1,000,000 points. At 3 coordinates of 4 bytes each

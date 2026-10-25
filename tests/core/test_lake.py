@@ -16,6 +16,7 @@ from vl_data.core.lake import Lake
 from vl_data.core.lake_schemas import (
     KEYPOINTS_SCHEMA,
     LINEAGE_SCHEMA,
+    MOTION_SCHEMA,
     QUARANTINE_SCHEMA,
     TABLE_SCHEMAS,
 )
@@ -59,7 +60,7 @@ def assert_no_swap_leftovers(root: Path) -> None:
 
 
 def test_table_schemas_match_plan() -> None:
-    assert list(TABLE_SCHEMAS) == ["keypoints", "quarantine", "lineage"]
+    assert list(TABLE_SCHEMAS) == ["keypoints", "quarantine", "lineage", "motion"]
     assert TABLE_SCHEMAS["keypoints"] is KEYPOINTS_SCHEMA
     expected = {
         "keypoints": [
@@ -89,12 +90,45 @@ def test_table_schemas_match_plan() -> None:
             ("frames_sha256", pa.string(), True),
             ("ground_truth_sha256", pa.string(), True),
         ],
+        "motion": [
+            ("frame_id", pa.int64(), False),
+            ("timestamp_ns", pa.int64(), False),
+            ("x_cm", pa.float64(), False),
+            ("velocity_cm_s", pa.float64(), True),
+            ("acceleration_cm_s2", pa.float64(), True),
+            ("n_points", pa.int32(), False),
+        ],
     }
     for name, fields in expected.items():
         schema = TABLE_SCHEMAS[name]
         assert [(f.name, f.type, f.nullable) for f in schema] == fields
     assert QUARANTINE_SCHEMA is TABLE_SCHEMAS["quarantine"]
     assert LINEAGE_SCHEMA is TABLE_SCHEMAS["lineage"]
+    assert MOTION_SCHEMA is TABLE_SCHEMAS["motion"]
+
+
+def test_motion_table_roundtrip(tmp_path: Path) -> None:
+    lake = Lake(tmp_path)
+    batch = pa.record_batch(
+        [
+            pa.array([0, 1], pa.int64()),
+            pa.array([0, 62_500_000], pa.int64()),
+            pa.array([1.0, 2.0], pa.float64()),
+            pa.array([None, 16.0], pa.float64()),
+            pa.array([None, None], pa.float64()),
+            pa.array([2, 2], pa.int32()),
+        ],
+        schema=MOTION_SCHEMA,
+    )
+    lake.swap_partition("motion", "a", [batch])
+    assert lake.list_drives("motion") == ["a"]
+    got = lake.read("motion", "a")
+    assert got.num_rows == 2
+    assert got.column("velocity_cm_s").to_pylist() == [None, 16.0]
+    assert got.drop_columns(["drive"]).schema.equals(MOTION_SCHEMA)
+    con = lake.connect()
+    assert con.execute("SELECT count(*) FROM motion").fetchone() == (2,)
+    con.close()
 
 
 def test_swap_creates_hive_partition(tmp_path: Path) -> None:

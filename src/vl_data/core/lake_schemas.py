@@ -1,4 +1,4 @@
-"""Arrow schemas for the lake tables (keypoints, quarantine, lineage)."""
+"""Arrow schemas for the lake tables (keypoints, quarantine, lineage, motion)."""
 
 import pyarrow as pa
 
@@ -41,9 +41,24 @@ LINEAGE_SCHEMA: pa.Schema = pa.schema(
     ]
 )
 
+# One row per frame of a drive's centroid; timestamp in ns, x in cm, velocity in cm/s,
+# acceleration in cm/s^2. Velocity and acceleration are null where there is no estimate.
+# n_points is the number of samples in the estimator window (a count).
+MOTION_SCHEMA: pa.Schema = pa.schema(
+    [
+        pa.field("frame_id", pa.int64(), nullable=False),
+        pa.field("timestamp_ns", pa.int64(), nullable=False),
+        pa.field("x_cm", pa.float64(), nullable=False),
+        pa.field("velocity_cm_s", pa.float64(), nullable=True),
+        pa.field("acceleration_cm_s2", pa.float64(), nullable=True),
+        pa.field("n_points", pa.int32(), nullable=False),
+    ]
+)
+
 # Table name -> schema. A plain dict so later modules can add entries.
 TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "keypoints": KEYPOINTS_SCHEMA,
     "quarantine": QUARANTINE_SCHEMA,
     "lineage": LINEAGE_SCHEMA,
+    "motion": MOTION_SCHEMA,
 }
