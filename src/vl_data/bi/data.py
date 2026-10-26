@@ -189,6 +189,16 @@ def _kind(error: Exception) -> str:
     return type(error).__name__
 
 
+def read_problem(error: Exception) -> str:
+    """Safe text for a failed read: the fixed message of a ValueError, else the type name only.
+
+    pa.ArrowInvalid is also a ValueError but can hold a file path, so it gets the type name.
+    """
+    if isinstance(error, ValueError) and not isinstance(error, pa.ArrowException):
+        return str(error)
+    return _kind(error)
+
+
 def _row(
     metric: str,
     unit: str,

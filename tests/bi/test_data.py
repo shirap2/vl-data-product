@@ -546,3 +546,12 @@ def test_is_link_detects_junction(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert _is_link(folder) is False
     monkeypatch.setattr(Path, "is_junction", lambda self: self.name == folder.name, raising=False)
     assert _is_link(folder) is True
+
+
+def test_read_problem_hides_paths_of_file_errors() -> None:
+    secret = r"C:\secret\x.parquet"
+    assert data.read_problem(ValueError("invalid drive id")) == "invalid drive id"
+    for error in (OSError(secret), pa.ArrowInvalid(f"Failed to open local file '{secret}'")):
+        text = data.read_problem(error)
+        assert text == type(error).__name__
+        assert "secret" not in text
