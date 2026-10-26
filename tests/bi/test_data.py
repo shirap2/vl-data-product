@@ -12,15 +12,19 @@ import pytest
 
 from vl_data.bi import data
 from vl_data.bi.data import (
+    SQL_ROWS_SHOWN,
     AnalyzeOutcome,
+    QueryOutcome,
     _is_link,
     _ps_quote,
     analyze_drive,
+    example_queries,
     ingest_command,
     list_lake_drives,
     load_quality,
     metric_rows,
     motion_command,
+    run_query,
 )
 from vl_data.core.config import Config
 from vl_data.core.lake import Lake
@@ -555,3 +559,169 @@ def test_read_problem_hides_paths_of_file_errors() -> None:
         text = data.read_problem(error)
         assert text == type(error).__name__
         assert "secret" not in text
+
+
+# --- SQL tab ---------------------------------------------------------------------------------
+
+
+class RaisingSqlClient:
+    """Client double whose sql() raises a chosen error."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def sql(self, query: str) -> pa.Table:
+        raise self._error
+
+
+def test_run_query_select_and_cap(dropped: BiDrive) -> None:
+    d = dropped
+    ids = sorted(d.client.keypoints(d.drive_id, "centroid").column("frame_id").to_pylist())
+    outcome = run_query(
+        d.client,
+        f"SELECT frame_id FROM keypoints WHERE drive = '{d.drive_id}' AND keypoint = 'centroid' "
+        "ORDER BY frame_id",
+    )
+    assert outcome.problem is None
+    assert outcome.table is not None
+    assert outcome.total_rows == len(ids) == 287  # 288 frames, frame 5 dropped
+    assert outcome.table.column("frame_id").to_pylist() == ids
+    assert SQL_ROWS_SHOWN == 10_000
+
+    capped = run_query(d.client, "SELECT * FROM generate_series(1, 12345) AS t(n)")
+    assert capped.problem is None
+    assert capped.table is not None
+    assert capped.table.num_rows == 10_000
+    assert capped.total_rows == 12_345
+    assert capped.table.column("n").to_pylist() == list(range(1, 10_001))
+
+    empty = run_query(d.client, "SELECT frame_id FROM quarantine WHERE code = 'NO-SUCH-CODE'")
+    assert empty == QueryOutcome(empty.table, 0, None)
+    assert empty.table is not None
+    assert empty.table.num_rows == 0
+
+
+def test_run_query_refuses_non_select_and_bad_sql(dropped: BiDrive, tmp_path: Path) -> None:
+    d = dropped
+    before = _snapshot(d.root / "lake")
+    missing = tmp_path / "secret_folder_xyz" / "missing.parquet"
+    queries = {
+        "drop": "DROP VIEW keypoints",
+        "copy": f"COPY (SELECT 1) TO '{(tmp_path / 'out.csv').as_posix()}'",
+        "two": "SELECT 1; SELECT 2",
+        "invalid": "SELEC nonsense (",
+        "binder": "SELECT no_such_column FROM lineage",
+        "io": f"SELECT * FROM read_parquet('{missing.as_posix()}')",
+        "catalog_path": 'SELECT * FROM "a/b"',
+    }
+    problems = {}
+    for name, query in queries.items():
+        outcome = run_query(d.client, query)
+        assert outcome.table is None, name
+        assert outcome.total_rows == 0, name
+        assert outcome.problem, name
+        problems[name] = outcome.problem
+    assert "only a SELECT statement is allowed" in problems["drop"]
+    assert "only a SELECT statement is allowed" in problems["copy"]
+    assert "expected exactly one SELECT statement, got 2" in problems["two"]
+    assert "cannot parse the query" in problems["invalid"]
+    assert "no_such_column" in problems["binder"]
+    assert problems["catalog_path"] == "CatalogException"  # first line holds a separator
+    assert "IOException" in problems["io"]
+    for text in problems.values():
+        for part in ("secret_folder_xyz", "missing.parquet", str(tmp_path), "\\"):
+            assert part not in text
+    assert not (tmp_path / "out.csv").exists()
+    assert _snapshot(d.root / "lake") == before
+
+
+def test_run_query_reader_errors_give_type_name_only() -> None:
+    cases = {
+        pa.ArrowInvalid(r"bad C:\secret\file.parquet"): "ArrowInvalid",
+        FileNotFoundError(r"C:\secret\file.parquet"): "FileNotFoundError",
+        pa.ArrowIOError(r"C:\secret\file.parquet"): "OSError",
+    }
+    for error, name in cases.items():
+        outcome = run_query(RaisingSqlClient(error), "SELECT 1")  # type: ignore[arg-type]
+        assert outcome == QueryOutcome(None, 0, name)
+
+
+def test_example_queries_run_and_check_drive_id(dropped: BiDrive) -> None:
+    d = dropped
+    examples = example_queries(d.drive_id)
+    assert list(examples) == [
+        "Quarantine rows per code",
+        "Peak speed (cm/s)",
+        "Kept vs rejected frames",
+        "First 20 centroid positions (cm)",
+        "All drives with status",
+    ]
+    results = {}
+    for label, query in examples.items():
+        outcome = run_query(d.client, query)
+        assert outcome.problem is None, label
+        assert outcome.table is not None, label
+        results[label] = outcome.table
+    quarantine = results["Quarantine rows per code"].to_pylist()
+    assert quarantine == [{"code": "VL-001", "rows_quarantined": 1}]
+    expected_peak = max(
+        abs(v)
+        for v in d.client.motion(d.drive_id).column("velocity_cm_s").to_pylist()
+        if v is not None
+    )
+    peak = results["Peak speed (cm/s)"].to_pylist()
+    assert len(peak) == 1
+    assert peak[0]["peak_speed_cm_s"] == pytest.approx(expected_peak)
+    lineage = d.client.lineage(d.drive_id).to_pylist()[0]
+    kept = results["Kept vs rejected frames"].to_pylist()
+    assert kept == [
+        {
+            k: lineage[k]
+            for k in (
+                "frames_expected",
+                "frames_in",
+                "frames_kept",
+                "frames_rejected",
+                "frames_missing",
+            )
+        }
+    ]
+    first = results["First 20 centroid positions (cm)"]
+    assert first.column_names == ["frame_id", "x_cm", "y_cm", "z_cm"]
+    centroid = d.client.keypoints(d.drive_id, "centroid")
+    ids = sorted(centroid.column("frame_id").to_pylist())[:20]
+    assert first.column("frame_id").to_pylist() == ids
+    assert DROPPED_FRAME not in ids
+    assert len(ids) == 20
+    everything = results["All drives with status"].to_pylist()
+    assert [r["drive"] for r in everything] == [d.drive_id]
+    assert everything[0]["status"] == lineage["status"]
+    assert everything[0]["frames_missing"] == 1
+    assert d.drive_id in examples["Quarantine rows per code"]
+    assert f"'{d.drive_id}'" in examples["Peak speed (cm/s)"]
+
+
+@pytest.mark.parametrize("bad", ["", "a'b", "x y", "a;b", r"..\x", "a/b"])
+def test_example_queries_reject_bad_drive_id(bad: str) -> None:
+    with pytest.raises(ValueError, match="invalid drive id"):
+        example_queries(bad)
+
+
+@pytest.mark.parametrize(
+    ("count", "total"), [(0, 0), (9_999, 9_999), (10_000, 10_000), (10_001, 10_001)]
+)
+def test_run_query_cap_boundary(dropped: BiDrive, count: int, total: int) -> None:
+    outcome = run_query(dropped.client, f"SELECT * FROM range({count}) AS t(n)")
+    assert outcome.problem is None
+    assert outcome.table is not None
+    assert outcome.total_rows == total
+    assert outcome.table.num_rows == min(count, 10_000)
+    assert outcome.table.column("n").to_pylist() == list(range(min(count, 10_000)))
+
+
+def test_run_query_makes_column_names_unique(dropped: BiDrive) -> None:
+    outcome = run_query(dropped.client, "SELECT 1 AS a, 2 AS a, 3 AS a, 4 AS b, 5 AS a_1")
+    assert outcome.table is not None
+    assert outcome.table.column_names == ["a", "a_2", "a_3", "b", "a_1"]
+    assert [outcome.table.column(i).to_pylist() for i in range(5)] == [[1], [2], [3], [4], [5]]
+    assert outcome.total_rows == 1

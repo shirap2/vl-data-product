@@ -9,6 +9,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+import duckdb
 import pyarrow as pa
 
 from vl_data.core.config import Config
@@ -18,6 +19,7 @@ from vl_data.usecase.config import MotionConfig
 from vl_data.usecase.evaluate import EvalReport, EvaluationError, MetricErrors, evaluate_drive
 
 QUARANTINE_ROWS_SHOWN: int = 200  # rows
+SQL_ROWS_SHOWN: int = 10_000  # rows; display cap of the SQL tab, not a memory limit
 
 # Same rule as the lake's private _DRIVE_RE (core/lake.py): checked before any path is built.
 _DRIVE_RE = re.compile(r"[A-Za-z0-9_-]+")
@@ -47,6 +49,15 @@ class AnalyzeOutcome:
     report: EvalReport | None
     problem: str | None  # plain text, never a file path
     command: str | None  # PowerShell command that fixes the problem, when there is one
+
+
+@dataclass(frozen=True)
+class QueryOutcome:
+    """Result of one SQL run: a table (at most SQL_ROWS_SHOWN rows), or a problem text."""
+
+    table: pa.Table | None
+    total_rows: int  # rows the query returned, before the display cap; 0 on a problem
+    problem: str | None  # plain text, never a file path
 
 
 def _check_drive(drive: str) -> None:
@@ -245,3 +256,73 @@ def metric_rows(report: EvalReport, config: Config, cfg: MotionConfig) -> list[d
             cfg.tolerances.acceleration_cm_s2,
         ),
     ]
+
+
+def run_query(client: VLClient, query: str) -> QueryOutcome:
+    """Run one SELECT through the SDK; every failure becomes a problem text without a file path.
+
+    The first SQL_ROWS_SHOWN rows are kept for display (a slice after the query ran, not a
+    memory limit); total_rows counts all returned rows. A zero-row result is a valid table.
+    """
+    try:
+        result = client.sql(query)
+    except duckdb.IOException as error:
+        return QueryOutcome(None, 0, f"{_kind(error)}: cannot read a file")  # text can hold paths
+    except duckdb.Error as error:
+        first_line = str(error).splitlines()[0] if str(error) else ""
+        if first_line and "/" not in first_line and "\\" not in first_line:
+            return QueryOutcome(None, 0, first_line)
+        return QueryOutcome(None, 0, _kind(error))
+    except (ValueError, OSError, pa.ArrowException) as error:
+        return QueryOutcome(None, 0, read_problem(error))
+    shown = result.slice(0, SQL_ROWS_SHOWN).rename_columns(_unique_names(result.column_names))
+    return QueryOutcome(shown, result.num_rows, None)
+
+
+def _unique_names(names: list[str]) -> list[str]:
+    """Column names without repeats: the first keeps its name, later ones get _1, _2, ... .
+
+    A suffix that another column already uses is skipped, so no two names are equal.
+    """
+    taken = set(names)
+    seen: set[str] = set()
+    unique = []
+    for name in names:
+        if name in seen:
+            number = 1
+            while f"{name}_{number}" in taken:
+                number += 1
+            name = f"{name}_{number}"
+            taken.add(name)
+        seen.add(name)
+        unique.append(name)
+    return unique
+
+
+def example_queries(drive: str) -> dict[str, str]:
+    """Five example SELECTs for a drive, label to SQL, in a fixed order; ValueError for a bad id.
+
+    Units sit in the column aliases: cm, cm/s. The drive id is checked before it enters the SQL.
+    """
+    _check_drive(drive)
+    return {
+        "Quarantine rows per code": (
+            "SELECT code, count(*) AS rows_quarantined FROM quarantine "
+            f"WHERE drive = '{drive}' GROUP BY code ORDER BY code"
+        ),
+        "Peak speed (cm/s)": (
+            f"SELECT max(abs(velocity_cm_s)) AS peak_speed_cm_s FROM motion WHERE drive = '{drive}'"
+        ),
+        "Kept vs rejected frames": (
+            "SELECT frames_expected, frames_in, frames_kept, frames_rejected, frames_missing "
+            f"FROM lineage WHERE drive = '{drive}'"
+        ),
+        "First 20 centroid positions (cm)": (
+            "SELECT frame_id, x_cm, y_cm, z_cm FROM keypoints "
+            f"WHERE drive = '{drive}' AND keypoint = 'centroid' ORDER BY frame_id LIMIT 20"
+        ),
+        "All drives with status": (
+            "SELECT drive, status, frames_expected, frames_kept, frames_rejected, frames_missing "
+            "FROM lineage ORDER BY drive"
+        ),
+    }
