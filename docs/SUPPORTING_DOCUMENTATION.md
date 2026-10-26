@@ -59,9 +59,10 @@ a whole number of frames, or a move whose start and end speed are both 0.
 
 ## 2. Architecture and design
 
-Status as of 2026-10-25: Modules 1 (generator), 2 (loader and ETL) and 3 (use case) are built and
-checked by tests and by a full-density run. Module 4 (the BI app) is planned. Anything marked
-"planned" has not been run.
+Status as of 2026-10-26: Modules 1 (generator), 2 (loader and ETL) and 3 (use case) are built and
+checked by tests and by a full-density run. Module 4 (the BI app) is built and checked by
+Streamlit's test runner and by one live-server start; it has not been opened in a browser by hand.
+Anything marked "planned" has not been run.
 
 ### What the product does
 
@@ -85,7 +86,7 @@ acceleration from the point cloud alone and showing that the result matches the 
 | 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud, ground truth, manifest. Check itself in both directions. | Built |
 | 2 Loader / ETL | Verify hashes, validate frames (VL-001 to VL-006), reduce each frame to 9 keypoints, write to the lake. | Built |
 | 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. Evaluate against ground truth. | Built |
-| 4 BI | One Streamlit app with three tabs: Generate, Clean, Analyze. | Planned |
+| 4 BI | One Streamlit app with four tabs: Generate, Clean, Analyze, SQL. | Built |
 
 Shared code lives in `core/`: config loader, Arrow schemas, hashing, the manifest, and later the
 `Lake` class. Imports only point down: entry points, then modules, then core. Core never imports a
@@ -101,6 +102,8 @@ src/vl_data/
                              inverse, faults, cli, scenarios/, ui/
   etl/                       Module 2 (built): config, keypoints, facts, rules,
                              ingest, errors_doc, cli
+  bi/                        Module 4 (built): data, figures, clean_tab,
+                             analyze_tab, sql_tab, shell, app
   core/lake.py, lake_schemas.py   Module 2 (built): the Lake class and the table schemas
 config/default.yaml          fps, output folder, body, tolerances, fit parameters
 config/etl.yaml              Module 2 (built): keypoint list, speed limit, chunk size
@@ -119,7 +122,7 @@ Built so far: the project skeleton (`pyproject.toml`, `src/vl_data/__init__.py`,
 (`src/vl_data/generator/models.py`, `body.py`, `motion.py`, the demo scenario in
 `generator/scenarios/demo.yaml`, and `tests/generator/`), then the drive builder and writer
 (`drive.py`, `writer.py`) and the generator's `generate` and `verify` commands (`generator/cli.py`,
-registered by the root `cli.py`). The back direction (`inverse.py`) and the `roundtrip` command are built, and so is the fault-injection helper (`faults.py`). Not built yet: the Generate tab.
+registered by the root `cli.py`). The back direction (`inverse.py`) and the `roundtrip` command are built, and so is the fault-injection helper (`faults.py`).
 
 ### Data flow inside the generator
 
@@ -379,7 +382,7 @@ whole centimetres.
 | Keypoint table layout (planned) | Long: one row per keypoint | Generic; the keypoint list is a YAML change; simple SQL filter by name | Wide: 27 coordinate columns per frame | Heavy column maths on the corners |
 | Bad frames (planned) | Quarantine only the failed frame, with a details-only row | One bad frame does not cost the drive; the raw frame stays in `data/raw/` | Reject the whole drive; copy the raw bytes | A consumer needs replay from the lake alone |
 | Ingest passes | One chunked pass: facts and keypoints together (user decision 2026-10-25) | Bounded memory, rules see the whole sequence from the facts, and the frames file is decoded once instead of twice | Two passes: facts, then keypoints | A rule needs cloud data that the stored facts do not hold |
-| BI | Streamlit and Plotly | One Python file per view | Superset, Grafana | Non-Python users |
+| BI | Streamlit and Plotly | Python only, one function per tab that AppTest can run, no server code | Dash, Jupyter, Superset, Grafana; Altair, matplotlib | Shared dashboards for non-Python users |
 | CLI | Typer | Typed commands | argparse | None |
 | Tests | pytest and hypothesis | Property tests suit a two-way check | unittest | None |
 | Not used | Kafka, Spark, Airflow, dlt, Docker | No purpose at this scale | See "Scaling" | See "Scaling" |
@@ -712,6 +715,146 @@ change of acceleration are included; the interior maximum (4.378 cm/s^2) is the 
   the SDK also returns Arrow tables. Pandas DataFrames were the alternative to Arrow tables: they
   have no exact column types and no real nulls (a missing integer becomes a float NaN).
 
+### Module 4: BI app (built)
+
+One Streamlit app (Streamlit turns a Python script into a web page) with four tabs: Generate,
+Clean, Analyze and SQL. The first three are in the
+design; the SQL tab is a user decision of 2026-10-26, added so a user can ask the lake their own
+question. A sidebar selector, "Drive", picks a drive from the lake, and every tab shows the
+scenario hash of that drive as a badge. The package is `vl_data.bi`. It uses `VLClient`,
+`evaluate_drive` and `render_generate_tab` as they are, writes nothing to the lake and edits no
+Module 1, 2 or 3 file. Module 4 adds no error codes: the Clean tab shows the existing VL-001 to
+VL-006 and the drive-level code `INTEGRITY` from `docs/ERROR_CODES.md`.
+
+#### Data flow
+
+```
+Lake --> VLClient (keypoints, motion, lineage, quarantine, sql)  -+
+raw drive + stored motion --> evaluate_drive (only on a click)   -+--> bi/data.py
+                                                                       |
+                                                                  bi/figures.py
+                                                                       |
+        clean_tab.py   analyze_tab.py   sql_tab.py   render_generate_tab (Module 1)
+                                   \         |          /
+                                          shell.py  (sidebar, four tabs, badges)
+                                             |
+                                          app.py  (page setup, configuration)
+```
+
+`bi/data.py` has no Streamlit code: it lists the drives, reads the quality of a drive, builds the
+`ingest` and `motion` commands, runs the evaluation, turns a report into table rows, runs a query
+and builds the example queries. `bi/figures.py` makes the Plotly figures (Plotly is a Python charting library with hover and zoom). Each tab is one
+function that draws into the page and never raises; a failure is shown with `st.error` or
+`st.info`, not as a traceback. `shell.py` draws the sidebar and the tabs, and `app.py` is the file
+that `streamlit run` starts.
+
+#### Tabs
+
+- Generate: the existing `render_generate_tab(config)`, unchanged. Its badge shows the scenario
+  hash of the drive selected in the sidebar, not the hash of the form the user is editing.
+- Clean (read-only): for the selected drive, the counts expected, in, kept, rejected and missing
+  (frames) and the keypoint rows (rows); a bar chart of frames kept, rejected and missing; a bar
+  chart of quarantine rows per error code; and the quarantine table, which shows at most 200 rows
+  and states the full count. A drive with no lineage row is not ingested: the tab prints the
+  exact `ingest` command for the raw folder and the lake, and does not run it.
+- Analyze: the stored motion (centroid x in cm, velocity in cm/s, acceleration in cm/s^2 against
+  time in s), which needs no click and no raw folder. The button "Evaluate against ground truth"
+  runs `evaluate_drive` on a click only and keeps the result in the session cache (a copy held in
+  memory while the browser tab stays open). The result is PASS
+  or FAIL from the evaluation, a metric table, timeline charts (estimate against truth) and error
+  charts with the tolerance lines. Only an ingested drive with status ok and no stored motion gets
+  the exact `motion` command. A drive that is not ingested, or was rejected, gets the `ingest`
+  command. A drive with more than one lineage row gets a problem text and no command (from
+  reading `_without_motion` in `bi/data.py`, not run).
+- SQL: a dropdown of five example queries fills a text box; Run sends the text to
+  `VLClient.sql` (it runs the text with DuckDB, an embedded SQL engine), which accepts one SELECT over the views `keypoints`, `quarantine`, `lineage` and
+  `motion`. The result table shows at most 10,000 rows and states the total. A non-SELECT, a
+  second statement or a bad query shows a one-line message.
+
+#### Command line
+
+```powershell
+python -m streamlit run src/vl_data/bi/app.py --server.address 127.0.0.1 --server.headless true --browser.gatherUsageStats false
+```
+
+`--server.address 127.0.0.1` makes the app listen on this computer only. Without it, a server may
+listen on all network interfaces, which means that any computer that can reach yours over the
+network could open the page, including the SQL tab, which has no login. Do not start the app with
+`--server.address 0.0.0.0` (all interfaces) or behind a port forward (a router or tunnel setting
+that passes outside traffic to your computer).
+
+Run it from the repository root. The lake folder comes from `VL_LAKE_DIR`, else `config/etl.yaml`,
+else `warehouse`; the raw folder comes from `VL_RAW_DIR`, else `raw_dir` in
+`config/default.yaml` (`data/raw`). The defaults are relative to the current folder, so start the
+app from the folder that holds `warehouse` and `data/raw`. The configuration files themselves are
+found by file path, not by the current folder.
+
+#### Technology reasons and alternatives
+
+These are reasons from design, not measurements.
+
+- Streamlit: Python only, so the app uses the same typed SDK and the same functions as the
+  command line. A tab is a function, which Streamlit's test runner (AppTest) can run without a
+  browser. There is no server code to write. Alternative: Dash, which needs callbacks and a layout
+  tree for the same screens. Streamlit reruns the whole script on every click, so the evaluation,
+  which hashes the drive again, is guarded by a button and a session cache.
+- Grafana and Superset: they need a server, a database connection and configuration, and they
+  suit shared dashboards for non-Python users. They would not call the estimator or
+  `evaluate_drive` directly, so the PASS or FAIL against ground truth would need a separate
+  service. Jupyter is a good place to analyse, but a notebook is not a shipped interface.
+- Plotly: hover, zoom and tolerance lines come with `st.plotly_chart`. Altair is declarative but
+  gives less control over gaps and tolerance lines; matplotlib is static.
+- No web service: the app reads the lake in-process through the SDK. A REST API is listed as
+  coming soon.
+
+#### What changed from the first plan
+
+`ingest_command` and `render_clean_tab` take the lake folder as an argument. The Analyze tab uses
+`config.raw_dir` as the raw folder. `read_problem` is a public helper in `bi/data.py` that the
+other files share (it turns an exception into a short message without a file path).
+
+#### What is proven by what
+
+The tabs are tested with AppTest on a small drive (a 100 cm cube of 10 points per axis). A live
+Streamlit server was started once by a script (`.claude/run-proofs/module4_server_check.py`,
+local, git-ignored): the health endpoint, the page and the server's own run of `app.py` answered,
+and the server log had no exception. That proves the app starts and is served, not what a browser
+draws and not any click.
+
+#### Limits of Module 4
+
+These come from reading the source and the tests, not from a measurement, unless a number says
+measured. The full list for users is in the release notes under Known issues.
+
+- The SQL tab runs any single SELECT through `VLClient.sql`, which can also read any file path
+  on the machine through `read_parquet` (a DuckDB function that reads a Parquet file from any
+  path). The app is a local single-user tool, and that premise depends on the address 127.0.0.1
+  (this computer only): the app must not be started with `--server.address 0.0.0.0` or behind a
+  port forward, because the SQL tab has no login. Production would use a locked connection
+  (external access off, extension autoload off, a memory limit; autoload means DuckDB loads an
+  add-on such as `httpfs` by itself when a query needs it). A query could also read environment
+  variables with `getenv` (a DuckDB function) or open a Windows UNC path (a network-share path),
+  which can send a login hash to that share; this was read from the DuckDB defaults and was not
+  run. A follow-up is written: `module4-TASK-4-1.md` in `.claude/plans/followups/`.
+- The app has one user. The Evaluate result is kept in the session, one entry per session, keyed
+  by drive id only, so it can be stale (the lake or the raw drive changed) until the next click
+  (follow-up file `module4-TASK-3-1.md`).
+- Display caps: 10,000 rows in the SQL tab (the whole result is loaded first, so the cap limits
+  what is shown, not memory) and 200 quarantine rows in the Clean tab.
+- The check that the raw folder is not a link looks one level deep and is not atomic; detecting a
+  Windows junction needs Python 3.12 or later (follow-up file `module4-TASK-1-1.md`).
+- A drive written by `write_drive` after a `DropFrame` fault cannot be evaluated: `evaluate_drive`
+  raises `EvaluationError` (for a 288-frame drive, for example: "ground truth has 288 rows; the
+  manifest implies 287"; N and N-1 in general). The Analyze tab shows that message and no report;
+  the Clean tab still shows VL-001. It is a gap between Modules 1 and 3, not a Module 4 fault. It
+  was found by reading the source and the tests, and the AppTest suite (`tests/bi/test_tabs.py`)
+  shows the behaviour. The follow-up is written:
+  `module3-faulted-drive-cannot-be-evaluated.md`.
+- The Generate-tab badge shows the hash of the drive selected in the sidebar, not the scenario in
+  the form.
+- A Plotly trace holds one point per frame, up to the 2,000-frame cap of a scenario; larger
+  drives were not tried.
+
 ### Storage math
 
 A full-density frame is 100 x 100 x 100 = 1,000,000 points. At 3 coordinates of 4 bytes each
@@ -738,14 +881,22 @@ partitioning and compaction, and scheduled runs with an orchestrator.
   faster vehicle would be flagged as impossible motion.
 - Tolerances come from two sweep drives and a random-scenario search (see the sweep section) and
   may widen when other scenarios are tried; the sweep drives start and end at rest.
+- SQL tab (Module 4): it runs any single SELECT through `VLClient.sql`, which can also read any
+  file path on the machine through `read_parquet`. This is a local single-user tool, and that
+  premise depends on the address 127.0.0.1: do not start the app with `--server.address 0.0.0.0`
+  or behind a port forward, because the SQL tab has no login. The production
+  fix is a locked connection (external access off, extension autoload off, a memory limit). Other
+  limits of Module 4 are in "Limits of Module 4" above.
 
 The full assumption list is in [ASSUMPTIONS.md](ASSUMPTIONS.md).
 
 ## 3. Release notes
 
-Status as of 2026-10-25: Modules 1 (generator), 2 (loader and ETL) and 3 (use case) are built and
-checked by tests and by a full-density run. Module 4 (the BI app) is planned. Every command and
-number below comes from a real run; items marked "planned" have not been run.
+Status as of 2026-10-26: Modules 1 (generator), 2 (loader and ETL), 3 (use case) and 4 (the BI
+app) are built. Modules 1 to 3 are checked by tests and by a full-density run; Module 4 is checked
+by Streamlit's test runner and one live-server start, not by a hand-opened browser. Every command
+and number below comes from a real run unless it says it comes from reading the source or the
+documentation.
 
 ### Product description
 
@@ -757,6 +908,8 @@ speeds. All data is synthetic.
 
 Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames, and `evaluate` checks the result against the ground truth and prints PASS or FAIL against tolerances in `config/motion.yaml`. The Python SDK (`VLClient`) and SQL read the lake.
 
+Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored velocity and acceleration and, on a click, checks them against the ground truth; SQL runs one SELECT over the lake. Apart from the Generate tab, which writes a drive, it only reads the lake.
+
 ### What is in this version
 
 | Part | What it does | Status |
@@ -764,7 +917,7 @@ Module 3 adds the use case: `motion` turns the stored centroid position of a dri
 | Generator | Writes a hashed drive: 16 fps point cloud, ground truth, manifest. Checks itself by recovering the scenario from the data. | Built |
 | Loader / ETL | Verifies hashes, validates frames with error codes VL-001 to VL-006, keeps 9 keypoints per frame, and writes keypoints, quarantine and lineage tables to a queryable lake. | Built |
 | Use-case algorithm | Computes velocity and acceleration and compares them with ground truth (`motion`, `evaluate`, `VLClient`). | Built |
-| BI | One Streamlit app: generate, clean, analyze. | Planned |
+| BI | One Streamlit app with four tabs: Generate, Clean, Analyze, SQL. | Built |
 
 ### Install and first check (run on 2026-10-23, Windows PowerShell, Python 3.12.6)
 
@@ -987,7 +1140,75 @@ client.sql(
 [{'frame_id': 0, 'velocity_cm_s': 0.0}, {'frame_id': 250, 'velocity_cm_s': 600.0}, {'frame_id': 500, 'velocity_cm_s': -300.1}, {'frame_id': 750, 'velocity_cm_s': -0.0}, {'frame_id': 999, 'velocity_cm_s': 0.0}]
 ```
 
-Dashboard examples for the app will be added when Module 4 exists.
+#### BI app (Module 4)
+
+The app is built with Streamlit (a Python library that turns a script into a web page) and draws
+its charts with Plotly (a Python charting library with hover and zoom). Start it from the
+repository root, in PowerShell, with the project's virtual environment active. Set `VL_LAKE_DIR`
+and `VL_RAW_DIR` only if your lake and raw folders are not the defaults (`warehouse` and
+`data/raw`, both relative to the current folder); the two lines below are comments that show the
+defaults, so remove the `#` and change the value only if you need to:
+
+```powershell
+# $env:VL_LAKE_DIR = 'warehouse'
+# $env:VL_RAW_DIR = 'data/raw'
+python -m streamlit run src/vl_data/bi/app.py --server.address 127.0.0.1 --server.headless true --browser.gatherUsageStats false
+```
+
+`--server.address 127.0.0.1` makes the app listen on this computer only. Without it, a server may
+listen on all network interfaces, which means that any other computer that can reach yours over
+the network could open the page. The SQL tab has no login, so do not start the app with
+`--server.address 0.0.0.0` (all interfaces) and do not put it behind a port forward (a router or tunnel setting that
+passes outside traffic to your computer).
+
+To have a drive to look at, use the commands from the sections above (the demo drive, then load it
+and compute its motion):
+
+```powershell
+python -m vl_data generate --scenario src/vl_data/generator/scenarios/demo.yaml --out data/raw
+python -m vl_data ingest data/raw/bf394b9bfb42 --lake-dir warehouse
+python -m vl_data motion bf394b9bfb42 --lake-dir warehouse
+```
+
+The page has four tabs: Generate, Clean, Analyze and SQL. The sidebar selector "Drive" lists the
+drives in the lake. Each tab shows a badge "scenario hash: <first 12 hex>" for the selected drive
+and a caption with all 64 characters. (On the Generate tab the badge is labelled "selected
+drive" and shows the hash of the drive chosen in the sidebar, not the scenario in the form.)
+With an empty lake the Generate tab has no badge and the other three tabs show a hint.
+
+- Clean (read-only): the metrics "expected (frames)", "in (frames)", "kept (frames)", "rejected
+  (frames)", "missing (frames)" and "keypoint rows (rows)"; a bar chart of the frame counts; a bar
+  chart of quarantine rows per error code; and the quarantine table, which shows at most 200 rows
+  and states the full count ("showing N of M quarantine rows"). If the drive is not ingested the
+  tab prints the command to run, for example
+  `python -m vl_data ingest '<raw>\<drive>' --lake-dir '<lake>'`, and does not run it.
+- Analyze: "Stored motion" draws centroid x (cm), velocity (cm/s) and acceleration (cm/s^2)
+  against time (s) from the lake; it needs no click and no raw folder. The button "Evaluate
+  against ground truth" runs the evaluation only when clicked, using the raw folder, and keeps the
+  result in the session cache (a copy kept in memory for as long as the browser tab stays open),
+  so a click on another widget does not repeat it. The result is PASS or
+  FAIL from the evaluation, a metric table, estimate-against-truth charts for velocity and
+  acceleration, and error charts with dashed tolerance lines. If the drive was ingested with
+  status ok but has no stored motion, the tab prints
+  `python -m vl_data motion <drive> --lake-dir '<lake>'`. If the drive is not ingested, or was
+  rejected at ingest, it prints the `ingest` command instead. If the drive has more than one
+  lineage row, it shows a problem text and no command (from reading the code, not run).
+- SQL: a dropdown "Example query" with five examples (Quarantine rows per code; Peak speed
+  (cm/s); Kept vs rejected frames; First 20 centroid positions (cm); All drives with status)
+  fills the box "SQL (one SELECT only)". Run sends it to `VLClient.sql`, which runs it with DuckDB
+  (an embedded SQL engine that reads the lake's Parquet files directly). The result table shows at
+  most 10,000 rows and states the total ("showing 10,000 of N rows", otherwise "N rows"). A
+  statement that is not a single SELECT, or a bad query, shows a one-line message.
+
+What was run (2026-10-26, one machine, CPU): the tabs were tested with Streamlit's test runner on
+a small drive (100 cm cube, 10 points per axis), and one real Streamlit server was started on
+that drive by `.claude/run-proofs/module4_server_check.py` (local, git-ignored): the health
+endpoint answered `ok`, the page answered HTTP 200, the server's own run of `app.py` answered
+`ok`, the server log had no Traceback or Exception, and the port was free afterwards (the script
+printed `SERVER_CHECK: PASS`, 6.5 s in all, measured on 2026-10-26; log
+`.claude/run-proofs/TASK-6-iter2-server.log`, local, git-ignored). That check proves the app starts and is
+served; it cannot click a widget, which is what the test runner covers. The page was not opened in
+a browser by hand, and the full-density demo drive was not loaded in the app.
 
 ### Known issues
 
@@ -1023,6 +1244,14 @@ Dashboard examples for the app will be added when Module 4 exists.
 - `tools/motion_sweep.py` is a measuring tool whose logic is not type-checked by mypy.
 - `evaluate` hashes every file of the drive before it compares anything (`verify_drive`). The points are 12 GB per 1,000 full-density frames uncompressed; on disk they are compressed, and the measured `evaluate` took 2 s on the full-density demo drive. Noisier data would take longer (assumption M3-A33).
 - Single machine, CPU only.
+- Module 4, SQL tab: it runs any single SELECT through `VLClient.sql`, which can also read any file path on the machine through `read_parquet` (a DuckDB function that reads a Parquet file from any path); this is a local single-user tool, and production would use a locked connection. The "local single-user" premise depends on the app listening on 127.0.0.1 only (this computer): started on `0.0.0.0` (all network interfaces) or behind a port forward, anyone who can reach the port could use the SQL tab, which has no login. The wider reach below comes from reading the DuckDB defaults and documentation and was NOT run: other file types (`read_csv`, `read_json`, `read_text`, glob patterns), possible network reads through extension autoload (DuckDB loading an add-on such as `httpfs` by itself when a query needs it), Windows UNC paths (a UNC path is a Windows network-share path; opening one can send a login hash to that share), environment variables and secrets through `getenv` (a DuckDB function that returns an environment variable) and `duckdb_secrets()`, and no memory, thread or time limit. `COPY`, `INSERT`, `CREATE`, `ATTACH`, `INSTALL`, `SET` and `PRAGMA` are refused as non-SELECT (by the statement-type check in the SDK, read from the code; the tests cover DROP, COPY and a two-statement query, and check that the lake files are unchanged). No writes were found by reading, not by a run. The 10,000-row cap limits the display only; the whole result is loaded first. You accepted the wider reach on 2026-10-26 on condition that it is documented and a follow-up is written: `module4-TASK-4-1.md`.
+- Module 4: a drive written by `write_drive` after a `DropFrame` fault cannot be evaluated: `evaluate_drive` raises `EvaluationError` (for a 288-frame drive, for example: "ground truth has 288 rows; the manifest implies 287"; N and N-1 in general). The Analyze tab shows that problem and no report; the Clean tab still shows VL-001. This is an integration gap between Module 1 and Module 3, found by reading the source and the tests; the AppTest suite (`tests/bi/test_tabs.py`) shows the behaviour. The follow-up is written: `module3-faulted-drive-cannot-be-evaluated.md`.
+- Module 4: the stored Evaluate result is keyed by drive id only and can be stale (after a new ingest, a new motion run or a changed raw drive) until the next click on Evaluate. The follow-up is written: `module4-TASK-3-1.md`.
+- Module 4: the check that the raw folder is not a link looks one level deep and is not atomic; junction detection needs Python 3.12 or later. The follow-up is written: `module4-TASK-1-1.md` (link check).
+- Module 4: the SQL box text is not refreshed when the selected drive changes (pick the example again), and the Run result is shown only in the run after the click, so any other widget action clears it.
+- Module 4: the Generate tab badge shows the hash of the drive selected in the sidebar, not the scenario in the form.
+- Module 4: run the app from the repository root, because the default lake and raw folders (`warehouse`, `data/raw`) are relative to the current folder.
+- Module 4: the live-server check proves startup and serving only; widget behaviour (the Evaluate and Run buttons, the dropdown) is proven by Streamlit's test runner, and the page was not opened in a browser by hand.
 
 ### Coming soon
 
@@ -1032,3 +1261,5 @@ Kafka), parallel loading of many drives, a data-quality report function, a Spark
 drives, an object-store profile, scheduled runs, and delta-encoded storage.
 
 Module 3 follow-ups: a stored evaluation table (today the report is printed and not stored), event detection on the motion table, a REST API over the SDK, and a Kalman or RTS smoother as an alternative to the window fit.
+
+Module 4 follow-ups: a locked SQL connection (external access off, extension autoload off, a memory limit), a fingerprint of the lake and raw drive so a stored evaluation is not shown stale, a deeper link check on the raw folder, a fix for evaluating a drive with a dropped frame, and a REST service if one is needed. The written follow-up files (in `.claude/plans/followups/`) are `module4-TASK-4-1.md` (SQL reach), `module4-TASK-3-1.md` (stale result), `module4-TASK-1-1.md` (link check) and `module3-faulted-drive-cannot-be-evaluated.md` (dropped frame).
