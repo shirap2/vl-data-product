@@ -16,7 +16,6 @@ from vl_data.core.config import Config
 from vl_data.core.lake import Lake
 from vl_data.generator.ui.generate_tab import render_generate_tab
 from vl_data.sdk.client import VLClient
-from vl_data.usecase.config import MotionConfig
 
 _DRIVE_KEY = "bi_drive"
 _HASH_CHARS = 12  # hex characters in the badge; the caption shows all 64
@@ -54,12 +53,12 @@ def _selected_hash(client: VLClient, drive: str) -> str | None:
     return value
 
 
-def render_app(config: Config, cfg: MotionConfig, lake_dir: Path) -> None:
+def render_app(config: Config, lake_dir: Path) -> None:
     """Draw the sidebar drive selector and the four tabs; never raises.
 
     The lake is only read: nothing is created when the folder is missing or empty. The hash of
     the selected drive is read once per run and shown at the top of every tab. All four tab
-    bodies run on every rerun; Evaluate runs only on its own button.
+    bodies run on every rerun.
     """
     lake = Lake(lake_dir)
     client = VLClient(lake)
@@ -86,6 +85,6 @@ def render_app(config: Config, cfg: MotionConfig, lake_dir: Path) -> None:
     with clean:
         render_clean_tab(client, drive, config.raw_dir, lake_dir)
     with analyze:
-        render_analyze_tab(client, config, cfg, lake_dir, drive)
+        render_analyze_tab(client, config, lake_dir, drive)
     with sql:
         render_sql_tab(client, drive)

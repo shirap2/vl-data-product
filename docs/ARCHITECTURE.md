@@ -662,16 +662,15 @@ One Streamlit app (Streamlit turns a Python script into a web page) with four ta
 Clean, Analyze and SQL. The first three are in the
 design; the SQL tab is a user decision of 2026-10-26, added so a user can ask the lake their own
 question. A sidebar selector, "Drive", picks a drive from the lake, and every tab shows the
-scenario hash of that drive as a badge. The package is `vl_data.bi`. It uses `VLClient`,
-`evaluate_drive` and `render_generate_tab` as they are, writes nothing to the lake and edits no
+scenario hash of that drive as a badge. The package is `vl_data.bi`. It uses `VLClient` and
+`render_generate_tab` as they are, writes nothing to the lake and edits no
 Module 1, 2 or 3 file. Module 4 adds no error codes: the Clean tab shows the existing VL-001 to
 VL-006 and the drive-level code `INTEGRITY` from `docs/ERROR_CODES.md`.
 
 ### Data flow
 
 ```
-Lake --> VLClient (keypoints, motion, lineage, quarantine, sql)  -+
-raw drive + stored motion --> evaluate_drive (only on a click)   -+--> bi/data.py
+Lake --> VLClient (keypoints, motion, lineage, quarantine, sql) --> bi/data.py
                                                                        |
                                                                   bi/figures.py
                                                                        |
@@ -683,8 +682,8 @@ raw drive + stored motion --> evaluate_drive (only on a click)   -+--> bi/data.p
 ```
 
 `bi/data.py` has no Streamlit code: it lists the drives, reads the quality of a drive, builds the
-`ingest` and `motion` commands, runs the evaluation, turns a report into table rows, runs a query
-and builds the example queries. `bi/figures.py` makes the Plotly figures (Plotly is a Python charting library with hover and zoom). Each tab is one
+`ingest` and `motion` commands, gives the hint for a drive with no stored motion (`motion_hint`),
+runs a query and builds the example queries. `bi/figures.py` makes the Plotly figures (Plotly is a Python charting library with hover and zoom). Each tab is one
 function that draws into the page and never raises; a failure is shown with `st.error` or
 `st.info`, not as a traceback. `shell.py` draws the sidebar and the tabs, and `app.py` is the file
 that `streamlit run` starts.
@@ -698,15 +697,13 @@ that `streamlit run` starts.
   chart of quarantine rows per error code; and the quarantine table, which shows at most 200 rows
   and states the full count. A drive with no lineage row is not ingested: the tab prints the
   exact `ingest` command for the raw folder and the lake, and does not run it.
-- Analyze: the stored motion (centroid x in cm, velocity in cm/s, acceleration in cm/s^2 against
-  time in s), which needs no click and no raw folder. The button "Evaluate against ground truth"
-  runs `evaluate_drive` on a click only and keeps the result in the session cache (a copy held in
-  memory while the browser tab stays open). The result is PASS
-  or FAIL from the evaluation, a metric table, timeline charts (estimate against truth) and error
-  charts with the tolerance lines. Only an ingested drive with status ok and no stored motion gets
-  the exact `motion` command. A drive that is not ingested, or was rejected, gets the `ingest`
-  command. A drive with more than one lineage row gets a problem text and no command (from
-  reading `_without_motion` in `bi/data.py`, not run).
+- Analyze: only the stored motion: three charts (centroid x in cm, velocity in cm/s,
+  acceleration in cm/s^2, against time in s), drawn with no click and no raw folder. The
+  centroid x is the raw centroid, not corrected. When the drive has no stored motion the tab
+  shows a message and the exact command: an ingested drive with status ok gets the `motion`
+  command; a drive that is not ingested, or was rejected, gets the `ingest` command; a drive with
+  more than one lineage row gets a problem text and no command (from reading `motion_hint` in
+  `bi/data.py`, not run). The tab never reads ground truth.
 - SQL: a dropdown of five example queries fills a text box; Run sends the text to
   `VLClient.sql` (it runs the text with DuckDB, an embedded SQL engine), which accepts one SELECT over the views `keypoints`, `quarantine`, `lineage` and
   `motion`. The result table shows at most 10,000 rows and states the total. A non-SELECT, a
@@ -737,29 +734,36 @@ These are reasons from design, not measurements.
 - Streamlit: Python only, so the app uses the same typed SDK and the same functions as the
   command line. A tab is a function, which Streamlit's test runner (AppTest) can run without a
   browser. There is no server code to write. Alternative: Dash, which needs callbacks and a layout
-  tree for the same screens. Streamlit reruns the whole script on every click, so the evaluation,
-  which hashes the drive again, is guarded by a button and a session cache.
+  tree for the same screens.
 - Grafana and Superset: they need a server, a database connection and configuration, and they
-  suit shared dashboards for non-Python users. They would not call the estimator or
-  `evaluate_drive` directly, so the PASS or FAIL against ground truth would need a separate
-  service. Jupyter is a good place to analyse, but a notebook is not a shipped interface.
-- Plotly: hover, zoom and tolerance lines come with `st.plotly_chart`. Altair is declarative but
-  gives less control over gaps and tolerance lines; matplotlib is static.
+  suit shared dashboards for non-Python users. They would not call the SDK
+  directly, so the stored motion would need a separate service. Jupyter is a good place to analyse, but a notebook is not a shipped interface.
+- Plotly: hover and zoom come with `st.plotly_chart`. Altair is declarative but
+  gives less control over gaps; matplotlib is static.
 - No web service: the app reads the lake in-process through the SDK. A REST API is listed as
   coming soon.
 
 ### What changed from the first plan
 
 `ingest_command` and `render_clean_tab` take the lake folder as an argument. The Analyze tab uses
-`config.raw_dir` as the raw folder. `read_problem` is a public helper in `bi/data.py` that the
+`config.raw_dir` only to print the `ingest` command. `read_problem` is a public helper in `bi/data.py` that the
 other files share (it turns an exception into a short message without a file path).
+
+The ground-truth evaluation (an Evaluate button, PASS or FAIL, metrics, estimate-against-truth
+charts) was part of the first Module 4 build and was removed on 2026-10-26 by user decision; the
+exercise does not require it. `render_analyze_tab(client, config, lake_dir, drive)` and
+`render_app(config, lake_dir)` lost the motion-config argument, and the app no longer loads
+`config/motion.yaml`.
 
 ### What is proven by what
 
-The tabs are tested with AppTest on a small drive (a 100 cm cube of 10 points per axis). A live
-Streamlit server was started once by a script (`.claude/run-proofs/module4_server_check.py`,
-local, git-ignored): the health endpoint, the page and the server's own run of `app.py` answered,
-and the server log had no exception. That proves the app starts and is served, not what a browser
+The tabs are tested with AppTest on a small drive (a 100 cm cube of 10 points per axis); on
+2026-10-26 the 100 tests in `tests/bi` passed with 100% statement coverage of `vl_data.bi` (319
+statements, 0 missed), and the full suite gave 958 passed, 4 skipped (all measured). A live
+Streamlit server was started by a script (`.claude/run-proofs/module4_server_check.py`, local,
+git-ignored) after the evaluation was removed: the health endpoint, the page and the server's own
+run of `app.py` answered, and the server log had no exception (`SERVER_CHECK: PASS`, 8.4 s
+measured on 2026-10-26; log `.claude/run-proofs/M4RM-server.log`). That proves the app starts and is served, not what a browser
 draws and not any click.
 
 ### Limits of Module 4
@@ -777,20 +781,8 @@ measured. The full list for users is in the release notes under Known issues.
   variables with `getenv` (a DuckDB function) or open a Windows UNC path (a network-share path),
   which can send a login hash to that share; this was read from the DuckDB defaults and was not
   run. A follow-up is written: `module4-TASK-4-1.md` in `.claude/plans/followups/`.
-- The app has one user. The Evaluate result is kept in the session, one entry per session, keyed
-  by drive id only, so it can be stale (the lake or the raw drive changed) until the next click
-  (follow-up file `module4-TASK-3-1.md`).
 - Display caps: 10,000 rows in the SQL tab (the whole result is loaded first, so the cap limits
   what is shown, not memory) and 200 quarantine rows in the Clean tab.
-- The check that the raw folder is not a link looks one level deep and is not atomic; detecting a
-  Windows junction needs Python 3.12 or later (follow-up file `module4-TASK-1-1.md`).
-- A drive written by `write_drive` after a `DropFrame` fault cannot be evaluated: `evaluate_drive`
-  raises `EvaluationError` (for a 288-frame drive, for example: "ground truth has 288 rows; the
-  manifest implies 287"; N and N-1 in general). The Analyze tab shows that message and no report;
-  the Clean tab still shows VL-001. It is a gap between Modules 1 and 3, not a Module 4 fault. It
-  was found by reading the source and the tests, and the AppTest suite (`tests/bi/test_tabs.py`)
-  shows the behaviour. The follow-up is written:
-  `module3-faulted-drive-cannot-be-evaluated.md`.
 - The Generate-tab badge shows the hash of the drive selected in the sidebar, not the scenario in
   the form.
 - A Plotly trace holds one point per frame, up to the 2,000-frame cap of a scenario; larger

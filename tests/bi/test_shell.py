@@ -9,8 +9,6 @@ import yaml
 from streamlit.testing.v1 import AppTest
 
 import vl_data.bi as bi_package
-import vl_data.bi.analyze_tab as analyze_tab
-import vl_data.bi.data as bi_data
 from vl_data.bi.data import list_lake_drives
 from vl_data.core.config import Config
 from vl_data.core.lake import Lake
@@ -19,7 +17,6 @@ from vl_data.etl.ingest import ingest_drive
 from vl_data.generator.models import Scenario
 from vl_data.generator.writer import generate_to_disk
 from vl_data.sdk.client import VLClient
-from vl_data.usecase.config import MotionConfig
 
 from .helpers import SCENARIO, BiDrive
 
@@ -29,10 +26,10 @@ BADGE_CHARS = 12
 TAB_LABELS = ["Generate", "Clean", "Analyze", "SQL"]
 
 
-def shell_script(config, cfg, lake_dir):  # noqa: ANN001, ANN201
+def shell_script(config, lake_dir):  # noqa: ANN001, ANN201
     from vl_data.bi.shell import render_app
 
-    render_app(config, cfg, lake_dir)
+    render_app(config, lake_dir)
 
 
 def badge_script(scenario_hash, label):  # noqa: ANN001, ANN201
@@ -41,11 +38,9 @@ def badge_script(scenario_hash, label):  # noqa: ANN001, ANN201
     hash_badge(scenario_hash, label)
 
 
-def _app(config: Config, cfg: MotionConfig, lake_dir: Path, raw_dir: Path) -> AppTest:
+def _app(config: Config, lake_dir: Path, raw_dir: Path) -> AppTest:
     config = config.model_copy(update={"raw_dir": raw_dir})
-    return AppTest.from_function(
-        shell_script, args=(config, cfg, lake_dir), default_timeout=TIMEOUT_S
-    )
+    return AppTest.from_function(shell_script, args=(config, lake_dir), default_timeout=TIMEOUT_S)
 
 
 def _badges(at: AppTest, index: int) -> list[str]:
@@ -56,12 +51,10 @@ def _captions(at: AppTest, index: int) -> list[str]:
     return [c.value for c in at.tabs[index].caption]
 
 
-def test_four_tabs_and_badge_on_each(
-    clean: BiDrive, bi_config: Config, motion_cfg: MotionConfig, tmp_path: Path
-) -> None:
+def test_four_tabs_and_badge_on_each(clean: BiDrive, bi_config: Config, tmp_path: Path) -> None:
     """Tab labels are fixed; each tab shows the 12-hex badge and the full hash in a caption."""
     full = clean.client.lineage(clean.drive_id).to_pylist()[0]["scenario_hash"]
-    at = _app(bi_config, motion_cfg, clean.root / "lake", tmp_path / "raw").run()
+    at = _app(bi_config, clean.root / "lake", tmp_path / "raw").run()
     assert not at.exception
     assert [t.label for t in at.tabs] == TAB_LABELS
     assert at.sidebar.selectbox(key="bi_drive").value == clean.drive_id
@@ -75,55 +68,36 @@ def test_four_tabs_and_badge_on_each(
     assert not at.error
 
 
-def test_generate_tab_is_unchanged_and_rerun_skips_evaluation(
-    clean: BiDrive,
-    bi_config: Config,
-    motion_cfg: MotionConfig,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+MOTION_KEYS = ["motion_position", "motion_velocity", "motion_acceleration"]
+
+
+def _motion_keys(at: AppTest) -> list[str]:
+    return [element.key for element in at.tabs[2].get("plotly_chart")]
+
+
+def test_generate_tab_is_unchanged_and_rerun_keeps_analyze_view(
+    clean: BiDrive, bi_config: Config, tmp_path: Path
 ) -> None:
-    """The Generate form is there; a run and a Generate click never evaluate, Evaluate does."""
-    evaluate_calls: list[str] = []
-    analyze_calls: list[str] = []
-    real_evaluate = bi_data.evaluate_drive
-    real_analyze = analyze_tab.analyze_drive
-
-    def evaluate_spy(*args: object, **kwargs: object) -> object:
-        evaluate_calls.append("evaluate")
-        return real_evaluate(*args, **kwargs)
-
-    def analyze_spy(*args: object, **kwargs: object) -> object:
-        analyze_calls.append("analyze")
-        return real_analyze(*args, **kwargs)
-
-    monkeypatch.setattr("vl_data.bi.data.evaluate_drive", evaluate_spy)
-    monkeypatch.setattr("vl_data.bi.analyze_tab.analyze_drive", analyze_spy)
+    """The Generate form is there; a Generate click adds one raw drive and leaves Analyze alone."""
     raw = tmp_path / "raw"
-    shutil.copytree(clean.drive_dir, raw / clean.drive_id)  # the selected drive is evaluable
-    at = _app(bi_config, motion_cfg, clean.root / "lake", raw).run()
+    assert not raw.exists()
+    at = _app(bi_config, clean.root / "lake", raw).run()
     assert not at.exception
     assert at.sidebar.selectbox(key="bi_drive").value == clean.drive_id
-    assert evaluate_calls == []
-    assert analyze_calls == []
+    assert _motion_keys(at) == MOTION_KEYS
     generate = at.tabs[0]
     assert generate.button[0].label == "Generate"
     assert len(generate.selectbox) + len(generate.number_input) + len(generate.text_input) > 0
-    assert [p.name for p in raw.iterdir()] == [clean.drive_id]  # nothing written before the click
+    assert not raw.exists()  # nothing written before the click
     generate.button[0].click()
     at.run()
     assert not at.exception
     assert not at.error
-    assert evaluate_calls == []
-    assert analyze_calls == []
-    written = {p.name for p in raw.iterdir()}
-    assert len(written) == 2  # the click wrote a different drive next to the selected one
-    assert clean.drive_id in written
-    # Positive control: the Evaluate button reaches evaluate_drive on this raw folder.
-    at.button(key="analyze_evaluate").click()
-    at.run()
-    assert not at.exception
-    assert evaluate_calls == ["evaluate"]
-    assert analyze_calls == ["analyze"]
+    written = [p.name for p in raw.iterdir()]
+    assert len(written) == 1  # the click wrote exactly one drive folder
+    assert written != [clean.drive_id]  # a different drive than the selected lake drive
+    assert at.sidebar.selectbox(key="bi_drive").value == clean.drive_id
+    assert _motion_keys(at) == MOTION_KEYS
 
 
 def _assert_hash_on_all_tabs(at: AppTest, full: str) -> None:
@@ -135,7 +109,7 @@ def _assert_hash_on_all_tabs(at: AppTest, full: str) -> None:
 
 
 def test_sidebar_lists_lake_drives_including_rejected(
-    clean: BiDrive, bi_config: Config, motion_cfg: MotionConfig, tmp_path: Path
+    clean: BiDrive, bi_config: Config, tmp_path: Path
 ) -> None:
     """The selector offers every lineage drive; each drive's own hash shows on all four tabs."""
     lake_dir = tmp_path / "lake"
@@ -156,7 +130,7 @@ def test_sidebar_lists_lake_drives_including_rejected(
     assert hash_rejected is not None
     assert hash_clean != hash_rejected
 
-    at = _app(bi_config, motion_cfg, lake_dir, tmp_path / "raw").run()
+    at = _app(bi_config, lake_dir, tmp_path / "raw").run()
     assert not at.exception
     box = at.sidebar.selectbox(key="bi_drive")
     assert list(box.options) == expected
@@ -174,13 +148,11 @@ def test_sidebar_lists_lake_drives_including_rejected(
     _assert_hash_on_all_tabs(at, second)
 
 
-def test_missing_lake_shows_info(
-    bi_config: Config, motion_cfg: MotionConfig, tmp_path: Path
-) -> None:
+def test_missing_lake_shows_info(bi_config: Config, tmp_path: Path) -> None:
     """A missing lake folder gives hints on three tabs, Generate still draws, nothing created."""
     lake_dir = tmp_path / "no_such_lake"
     raw = tmp_path / "raw"
-    at = _app(bi_config, motion_cfg, lake_dir, raw).run()
+    at = _app(bi_config, lake_dir, raw).run()
     assert not at.exception
     assert not at.error
     assert at.sidebar.selectbox(key="bi_drive").value is None
@@ -195,11 +167,11 @@ def test_missing_lake_shows_info(
     assert not raw.exists()
 
 
-def test_empty_lake_shows_info(bi_config: Config, motion_cfg: MotionConfig, tmp_path: Path) -> None:
+def test_empty_lake_shows_info(bi_config: Config, tmp_path: Path) -> None:
     """An existing empty lake folder gives the same hints and stays empty."""
     lake_dir = tmp_path / "lake"
     lake_dir.mkdir()
-    at = _app(bi_config, motion_cfg, lake_dir, tmp_path / "raw").run()
+    at = _app(bi_config, lake_dir, tmp_path / "raw").run()
     assert not at.exception
     assert len(at.info) == 3
     assert list(lake_dir.iterdir()) == []
@@ -211,7 +183,6 @@ def test_empty_lake_shows_info(bi_config: Config, motion_cfg: MotionConfig, tmp_
 def test_lineage_read_error_shows_one_error_and_none_badge(
     clean: BiDrive,
     bi_config: Config,
-    motion_cfg: MotionConfig,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     error: Exception,
@@ -222,7 +193,7 @@ def test_lineage_read_error_shows_one_error_and_none_badge(
         raise error
 
     monkeypatch.setattr("vl_data.sdk.client.VLClient.lineage", boom)
-    at = _app(bi_config, motion_cfg, clean.root / "lake", tmp_path / "raw").run()
+    at = _app(bi_config, clean.root / "lake", tmp_path / "raw").run()
     assert not at.exception
     shown = [e.value for e in at.error]
     assert len(shown) == 1
@@ -236,7 +207,6 @@ def test_lineage_read_error_shows_one_error_and_none_badge(
 def test_two_lineage_rows_give_none_badge_without_shell_error(
     clean: BiDrive,
     bi_config: Config,
-    motion_cfg: MotionConfig,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -248,7 +218,7 @@ def test_two_lineage_rows_give_none_badge_without_shell_error(
         return pa.concat_tables([table, table])
 
     monkeypatch.setattr("vl_data.sdk.client.VLClient.lineage", doubled)
-    at = _app(bi_config, motion_cfg, clean.root / "lake", tmp_path / "raw").run()
+    at = _app(bi_config, clean.root / "lake", tmp_path / "raw").run()
     assert not at.exception
     assert len(at.error) == 1  # one error, from the Clean tab; the shell adds none
     assert len(at.tabs[1].error) == 1
@@ -260,7 +230,6 @@ def test_two_lineage_rows_give_none_badge_without_shell_error(
 def test_unreadable_lake_folder_shows_one_safe_error(
     clean: BiDrive,
     bi_config: Config,
-    motion_cfg: MotionConfig,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     error: Exception,
@@ -271,7 +240,7 @@ def test_unreadable_lake_folder_shows_one_safe_error(
         raise error
 
     monkeypatch.setattr("vl_data.bi.shell.list_lake_drives", boom)
-    at = _app(bi_config, motion_cfg, clean.root / "lake", tmp_path / "raw").run()
+    at = _app(bi_config, clean.root / "lake", tmp_path / "raw").run()
     assert not at.exception
     assert len(at.error) == 1
     assert at.sidebar.selectbox(key="bi_drive").value is None

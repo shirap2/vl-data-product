@@ -1,4 +1,4 @@
-"""Data layer of the BI app: drive list, quality, evaluation outcome, metric rows, commands.
+"""Data layer of the BI app: drive list, quality, motion hint, SQL outcome, commands.
 
 Pure functions over Arrow tables and the SDK; no Streamlit import and no lake write.
 Units: frames and rows are counts; positions cm; velocities cm/s; accelerations cm/s^2.
@@ -12,11 +12,8 @@ from pathlib import Path
 import duckdb
 import pyarrow as pa
 
-from vl_data.core.config import Config
 from vl_data.core.lake import Lake
 from vl_data.sdk.client import VLClient
-from vl_data.usecase.config import MotionConfig
-from vl_data.usecase.evaluate import EvalReport, EvaluationError, MetricErrors, evaluate_drive
 
 QUARANTINE_ROWS_SHOWN: int = 200  # rows
 SQL_ROWS_SHOWN: int = 10_000  # rows; display cap of the SQL tab, not a memory limit
@@ -42,12 +39,10 @@ class DriveQuality:
 
 
 @dataclass(frozen=True)
-class AnalyzeOutcome:
-    """Result of one Analyze click: a report, or a problem with the command that fixes it."""
+class MotionHint:
+    """Why a drive has no stored motion, with the PowerShell command that fixes it (if any)."""
 
-    drive: str
-    report: EvalReport | None
-    problem: str | None  # plain text, never a file path
+    problem: str  # plain text, never a file path
     command: str | None  # PowerShell command that fixes the problem, when there is one
 
 
@@ -122,77 +117,33 @@ def motion_command(drive: str, lake_dir: Path) -> str:
     return f"python -m vl_data motion {drive} --lake-dir {_ps_quote(lake_dir)}"
 
 
-def _is_link(entry: Path) -> bool:
-    """True for a symlink, or a Windows junction (junction detection needs Python 3.12+).
+def motion_hint(client: VLClient, raw_dir: Path, lake_dir: Path, drive: str) -> MotionHint:
+    """Explain a drive with no stored motion; only an ingested ok drive is fixed by motion.
 
-    Repeats the rule of the evaluate command (usecase/cli.py), whose helper is private.
-    """
-    is_junction = getattr(entry, "is_junction", None)
-    return entry.is_symlink() or bool(is_junction and is_junction())
-
-
-def analyze_drive(
-    client: VLClient,
-    config: Config,
-    cfg: MotionConfig,
-    raw_dir: Path,
-    lake_dir: Path,
-    drive: str,
-) -> AnalyzeOutcome:
-    """Evaluate a drive against its ground truth; every failure becomes a problem text.
-
-    Needs a non-empty motion table (else the problem names motion_command) and a real raw
-    folder raw_dir/drive that is not, and holds no, symlink or junction (else ingest_command).
-    Problem texts never hold a file path. Nothing is written to the lake.
+    Reads the lineage only (not the motion table) and writes nothing; never raises. The problem
+    text holds no file path. The command is the ingest command (drive not ingested, or rejected
+    at ingest), the motion command (ingested ok, no motion yet), or None (invalid drive id,
+    unreadable lineage, or unexpected lineage rows).
     """
     try:
         _check_drive(drive)
     except ValueError as error:
-        return AnalyzeOutcome(drive, None, str(error), None)
-    try:
-        has_motion = client.motion(drive).num_rows > 0
-    except (OSError, pa.ArrowException) as error:
-        return AnalyzeOutcome(drive, None, f"cannot read the motion table: {_kind(error)}", None)
-    command = ingest_command(raw_dir, drive, lake_dir)
-    if not has_motion:
-        return _without_motion(client, lake_dir, drive, command)
-    drive_dir = raw_dir / drive
-    if not drive_dir.is_dir():
-        return AnalyzeOutcome(drive, None, f"raw folder of drive {drive!r} not found", command)
-    try:
-        linked = _is_link(drive_dir) or any(_is_link(entry) for entry in drive_dir.iterdir())
-    except OSError as error:
-        problem = f"cannot list the raw folder of drive {drive!r}: {_kind(error)}"
-        return AnalyzeOutcome(drive, None, problem, command)
-    if linked:
-        problem = f"the raw folder of drive {drive!r} is, or holds, a link; use the real folder"
-        return AnalyzeOutcome(drive, None, problem, command)
-    try:
-        report = evaluate_drive(drive_dir, client, config, cfg)
-    except EvaluationError as error:
-        return AnalyzeOutcome(drive, None, str(error), None)
-    except (OSError, ValueError, pa.ArrowException) as error:
-        problem = f"drive {drive!r}: evaluation failed ({_kind(error)})"
-        return AnalyzeOutcome(drive, None, problem, None)
-    return AnalyzeOutcome(drive, report, None, None)
-
-
-def _without_motion(client: VLClient, lake_dir: Path, drive: str, ingest: str) -> AnalyzeOutcome:
-    """Outcome for a drive with no motion table; only an ingested ok drive is fixed by motion."""
+        return MotionHint(str(error), None)
     try:
         lineage = client.lineage(drive)
-    except (OSError, ValueError, pa.ArrowException) as error:
-        return AnalyzeOutcome(drive, None, f"cannot read the lineage: {_kind(error)}", None)
+        statuses = lineage.column("status").to_pylist()
+    except (OSError, ValueError, KeyError, pa.ArrowException) as error:
+        return MotionHint(f"cannot read the lineage: {_kind(error)}", None)
     if lineage.num_rows > 1:
-        problem = f"drive {drive!r} has unexpected lineage rows ({lineage.num_rows})"
-        return AnalyzeOutcome(drive, None, problem, None)
+        return MotionHint(f"drive {drive!r} has unexpected lineage rows ({lineage.num_rows})", None)
+    ingest = ingest_command(raw_dir, drive, lake_dir)
     if lineage.num_rows == 0:
-        return AnalyzeOutcome(drive, None, f"drive {drive!r} is not ingested", ingest)
-    if lineage.column("status").to_pylist() != ["ok"]:
+        return MotionHint(f"drive {drive!r} is not ingested", ingest)
+    if statuses != ["ok"]:
         problem = f"drive {drive!r} was rejected at ingest; fix the raw data and re-ingest"
-        return AnalyzeOutcome(drive, None, problem, ingest)
+        return MotionHint(problem, ingest)
     problem = f"drive {drive!r} has no motion table; compute it first"
-    return AnalyzeOutcome(drive, None, problem, motion_command(drive, lake_dir))
+    return MotionHint(problem, motion_command(drive, lake_dir))
 
 
 def _kind(error: Exception) -> str:
@@ -208,54 +159,6 @@ def read_problem(error: Exception) -> str:
     if isinstance(error, ValueError) and not isinstance(error, pa.ArrowException):
         return str(error)
     return _kind(error)
-
-
-def _row(
-    metric: str,
-    unit: str,
-    interior: MetricErrors,
-    overall: MetricErrors | None,
-    tolerance: float,
-) -> dict[str, object]:
-    return {
-        "metric": metric,
-        "unit": unit,
-        "interior_max": interior.max_abs,
-        "interior_rms": interior.rms,
-        "all_max": None if overall is None else overall.max_abs,
-        "all_rms": None if overall is None else overall.rms,
-        "tolerance": tolerance,
-        "within": bool(interior.max_abs <= tolerance),  # False when NaN (no interior frame)
-    }
-
-
-def metric_rows(report: EvalReport, config: Config, cfg: MotionConfig) -> list[dict[str, object]]:
-    """Rows for the metrics table: metric, unit, interior and all-frame max and RMS, tolerance.
-
-    Each row also has within (interior max <= tolerance).
-
-    Errors are estimate minus truth in the row's unit (cm, cm/s or cm/s^2). Position has
-    interior frames only (all_max and all_rms are None). within is interior max <= tolerance,
-    False when the error is NaN. The overall PASS or FAIL is report.passed (it also needs at
-    least one interior frame).
-    """
-    return [
-        _row("position", "cm", report.position_cm, None, config.tolerances.position_cm),
-        _row(
-            "velocity",
-            "cm/s",
-            report.velocity_cm_s,
-            report.velocity_all_cm_s,
-            cfg.tolerances.velocity_cm_s,
-        ),
-        _row(
-            "acceleration",
-            "cm/s^2",
-            report.acceleration_cm_s2,
-            report.acceleration_all_cm_s2,
-            cfg.tolerances.acceleration_cm_s2,
-        ),
-    ]
 
 
 def run_query(client: VLClient, query: str) -> QueryOutcome:

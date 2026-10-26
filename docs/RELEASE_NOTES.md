@@ -16,7 +16,7 @@ speeds. All data is synthetic.
 
 Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames, and `evaluate` checks the result against the ground truth and prints PASS or FAIL against tolerances in `config/motion.yaml`. The Python SDK (`VLClient`) and SQL read the lake.
 
-Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored velocity and acceleration and, on a click, checks them against the ground truth; SQL runs one SELECT over the lake. Apart from the Generate tab, which writes a drive, it only reads the lake.
+Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored centroid position, velocity and acceleration; SQL runs one SELECT over the lake. Apart from the Generate tab, which writes a drive, it only reads the lake.
 
 ## What is in this version
 
@@ -290,14 +290,9 @@ With an empty lake the Generate tab has no badge and the other three tabs show a
   and states the full count ("showing N of M quarantine rows"). If the drive is not ingested the
   tab prints the command to run, for example
   `python -m vl_data ingest '<raw>\<drive>' --lake-dir '<lake>'`, and does not run it.
-- Analyze: "Stored motion" draws centroid x (cm), velocity (cm/s) and acceleration (cm/s^2)
-  against time (s) from the lake; it needs no click and no raw folder. The button "Evaluate
-  against ground truth" runs the evaluation only when clicked, using the raw folder, and keeps the
-  result in the session cache (a copy kept in memory for as long as the browser tab stays open),
-  so a click on another widget does not repeat it. The result is PASS or
-  FAIL from the evaluation, a metric table, estimate-against-truth charts for velocity and
-  acceleration, and error charts with dashed tolerance lines. If the drive was ingested with
-  status ok but has no stored motion, the tab prints
+- Analyze: draws only the stored motion: centroid x (cm), velocity (cm/s) and acceleration
+  (cm/s^2) against time (s), from the lake; it needs no click and no raw folder. If the drive was
+  ingested with status ok but has no stored motion, the tab prints
   `python -m vl_data motion <drive> --lake-dir '<lake>'`. If the drive is not ingested, or was
   rejected at ingest, it prints the `ingest` command instead. If the drive has more than one
   lineage row, it shows a problem text and no command (from reading the code, not run).
@@ -313,10 +308,12 @@ a small drive (100 cm cube, 10 points per axis), and one real Streamlit server w
 that drive by `.claude/run-proofs/module4_server_check.py` (local, git-ignored): the health
 endpoint answered `ok`, the page answered HTTP 200, the server's own run of `app.py` answered
 `ok`, the server log had no Traceback or Exception, and the port was free afterwards (the script
-printed `SERVER_CHECK: PASS`, 6.5 s in all, measured on 2026-10-26; log
-`.claude/run-proofs/TASK-6-iter2-server.log`, local, git-ignored). That check proves the app starts and is
-served; it cannot click a widget, which is what the test runner covers. The page was not opened in
-a browser by hand, and the full-density demo drive was not loaded in the app.
+printed `SERVER_CHECK: PASS`, 8.4 s in all, measured on 2026-10-26 with a Python timer; log
+`.claude/run-proofs/M4RM-server.log`, local, git-ignored). After the evaluation was removed, the
+100 tests in `tests/bi` passed with 100% statement coverage of `vl_data.bi` (319 statements, 0
+missed), and the full suite gave 958 passed, 4 skipped (all measured, 2026-10-26). The server check
+proves the app starts and is served; it cannot click a widget, which is what the test runner
+covers. The page was not opened in a browser by hand, and the full-density demo drive was not loaded in the app.
 
 ## Known issues
 
@@ -353,13 +350,10 @@ a browser by hand, and the full-density demo drive was not loaded in the app.
 - `evaluate` hashes every file of the drive before it compares anything (`verify_drive`). The points are 12 GB per 1,000 full-density frames uncompressed; on disk they are compressed, and the measured `evaluate` took 2 s on the full-density demo drive. Noisier data would take longer (assumption M3-A33).
 - Single machine, CPU only.
 - Module 4, SQL tab: it runs any single SELECT through `VLClient.sql`, which can also read any file path on the machine through `read_parquet` (a DuckDB function that reads a Parquet file from any path); this is a local single-user tool, and production would use a locked connection. The "local single-user" premise depends on the app listening on 127.0.0.1 only (this computer): started on `0.0.0.0` (all network interfaces) or behind a port forward, anyone who can reach the port could use the SQL tab, which has no login. The wider reach below comes from reading the DuckDB defaults and documentation and was NOT run: other file types (`read_csv`, `read_json`, `read_text`, glob patterns), possible network reads through extension autoload (DuckDB loading an add-on such as `httpfs` by itself when a query needs it), Windows UNC paths (a UNC path is a Windows network-share path; opening one can send a login hash to that share), environment variables and secrets through `getenv` (a DuckDB function that returns an environment variable) and `duckdb_secrets()`, and no memory, thread or time limit. `COPY`, `INSERT`, `CREATE`, `ATTACH`, `INSTALL`, `SET` and `PRAGMA` are refused as non-SELECT (by the statement-type check in the SDK, read from the code; the tests cover DROP, COPY and a two-statement query, and check that the lake files are unchanged). No writes were found by reading, not by a run. The 10,000-row cap limits the display only; the whole result is loaded first. You accepted the wider reach on 2026-10-26 on condition that it is documented and a follow-up is written: `module4-TASK-4-1.md`.
-- Module 4: a drive written by `write_drive` after a `DropFrame` fault cannot be evaluated: `evaluate_drive` raises `EvaluationError` (for a 288-frame drive, for example: "ground truth has 288 rows; the manifest implies 287"; N and N-1 in general). The Analyze tab shows that problem and no report; the Clean tab still shows VL-001. This is an integration gap between Module 1 and Module 3, found by reading the source and the tests; the AppTest suite (`tests/bi/test_tabs.py`) shows the behaviour. The follow-up is written: `module3-faulted-drive-cannot-be-evaluated.md`.
-- Module 4: the stored Evaluate result is keyed by drive id only and can be stale (after a new ingest, a new motion run or a changed raw drive) until the next click on Evaluate. The follow-up is written: `module4-TASK-3-1.md`.
-- Module 4: the check that the raw folder is not a link looks one level deep and is not atomic; junction detection needs Python 3.12 or later. The follow-up is written: `module4-TASK-1-1.md` (link check).
 - Module 4: the SQL box text is not refreshed when the selected drive changes (pick the example again), and the Run result is shown only in the run after the click, so any other widget action clears it.
 - Module 4: the Generate tab badge shows the hash of the drive selected in the sidebar, not the scenario in the form.
 - Module 4: run the app from the repository root, because the default lake and raw folders (`warehouse`, `data/raw`) are relative to the current folder.
-- Module 4: the live-server check proves startup and serving only; widget behaviour (the Evaluate and Run buttons, the dropdown) is proven by Streamlit's test runner, and the page was not opened in a browser by hand.
+- Module 4: the live-server check proves startup and serving only; widget behaviour (the Run button, the dropdown) is proven by Streamlit's test runner, and the page was not opened in a browser by hand.
 
 ## Coming soon
 
@@ -370,4 +364,4 @@ drives, an object-store profile, scheduled runs, and delta-encoded storage.
 
 Module 3 follow-ups: a stored evaluation table (today the report is printed and not stored), event detection on the motion table, a REST API over the SDK, and a Kalman or RTS smoother as an alternative to the window fit.
 
-Module 4 follow-ups: a locked SQL connection (external access off, extension autoload off, a memory limit), a fingerprint of the lake and raw drive so a stored evaluation is not shown stale, a deeper link check on the raw folder, a fix for evaluating a drive with a dropped frame, and a REST service if one is needed. The written follow-up files (in `.claude/plans/followups/`) are `module4-TASK-4-1.md` (SQL reach), `module4-TASK-3-1.md` (stale result), `module4-TASK-1-1.md` (link check) and `module3-faulted-drive-cannot-be-evaluated.md` (dropped frame).
+Module 4 follow-ups: a locked SQL connection (external access off, extension autoload off, a memory limit), and a REST service if one is needed. The written follow-up file (in `.claude/plans/followups/`) is `module4-TASK-4-1.md` (SQL reach).

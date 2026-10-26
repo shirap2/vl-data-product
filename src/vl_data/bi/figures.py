@@ -11,11 +11,6 @@ from vl_data.bi.data import DriveQuality
 _TIME_TITLE = "time (s)"
 _MODE = "lines+markers"  # markers keep isolated points visible next to gaps
 
-# kind to (estimate column, truth column, unit) for the evaluation frames table
-_EVAL_KINDS = {
-    "velocity": ("velocity_est_cm_s", "velocity_true_cm_s", "cm/s"),
-    "acceleration": ("acceleration_est_cm_s2", "acceleration_true_cm_s2", "cm/s^2"),
-}
 # kind to (motion column, y axis title) for the stored motion table
 _MOTION_KINDS = {
     "position": ("x_cm", "centroid x (cm)"),
@@ -72,34 +67,4 @@ def motion_figure(motion: pa.Table, fps: int, kind: str) -> go.Figure:
         go.Scatter(x=_seconds(ordered, fps), y=_values(ordered, column), mode=_MODE, name=kind)
     )
     fig.update_layout(xaxis_title=_TIME_TITLE, yaxis_title=title)
-    return fig
-
-
-def timeline_figure(frames: pa.Table, fps: int, kind: str) -> go.Figure:
-    """Estimate and truth against time in s; kind is "velocity" or "acceleration".
-
-    Units: y is cm/s or cm/s^2.
-    """
-    _check_kind(kind, _EVAL_KINDS)
-    est, true, unit = _EVAL_KINDS[kind]
-    t = _seconds(frames, fps)
-    fig = go.Figure(
-        [
-            go.Scatter(x=t, y=_values(frames, est), mode=_MODE, name="estimate"),
-            go.Scatter(x=t, y=_values(frames, true), mode=_MODE, name="truth"),
-        ]
-    )
-    fig.update_layout(xaxis_title=_TIME_TITLE, yaxis_title=f"{kind} ({unit})")
-    return fig
-
-
-def error_figure(frames: pa.Table, fps: int, kind: str, tolerance: float) -> go.Figure:
-    """Estimate minus truth against time in s, with lines at +/- tolerance (cm/s or cm/s^2)."""
-    _check_kind(kind, _EVAL_KINDS)
-    est, true, unit = _EVAL_KINDS[kind]
-    error = _values(frames, est) - _values(frames, true)  # NaN estimate stays a gap
-    fig = go.Figure(go.Scatter(x=_seconds(frames, fps), y=error, mode=_MODE, name=f"{kind} error"))
-    for level in (tolerance, -tolerance):
-        fig.add_hline(y=level, line_dash="dash")
-    fig.update_layout(xaxis_title=_TIME_TITLE, yaxis_title=f"{kind} error ({unit})")
     return fig
