@@ -1,5 +1,4 @@
 # Demo drive: 1000 frames at 16 fps (62.5 s). Units: cm, cm/s, s.
-seed: 0
 start: {x_cm: 0.0, y_cm: 0.0, z_cm: 0.0, speed_cm_s: 0.0}
 segments:
   - {type: stop, duration_s: 2.0}
