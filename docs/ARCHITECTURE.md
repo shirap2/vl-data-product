@@ -97,7 +97,7 @@ How a drive is written:
 - Measured on the 1,000-frame demo at 1,000,000 points per frame (a scratch script with the same
   50-frame batching, `.claude/run-proofs/FULL-DENSITY-measure.log`): 75.1 s, peak working set
   2,859 MiB, `frames.parquet` 287,134,433 bytes with zstd (4,024,944,648 bytes with snappy). The
-  real `generate` command took 65.6 s to 237.7 s including verification in single runs on one
+  real `generate` command took 81 s to 237.7 s including verification in single runs on one
   machine (81 s on 2026-10-24; 237.7 s in the fresh-clone run of 2026-10-25, measured in
   `FINAL-DOCS-M2-fresh-clone.log`); the spread is unexplained, see RELEASE_NOTES, Usage. The
   2,000-frame cap was not run (about 24 GB raw, about 0.6 GB on disk and about 2.5 minutes, scaled

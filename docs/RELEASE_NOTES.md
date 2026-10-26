@@ -49,9 +49,10 @@ Run these with the project's virtual environment active, or call `.venv\Scripts\
 Generate the demo drive (1,000 frames, one reversal, two stops). The times of this command vary a
 lot on this machine: the full-density `generate` (with verification) took 237.7 s in the
 fresh-clone run of 2026-10-25 on the Loader branch (`FINAL-DOCS-M2-fresh-clone.log`, read here;
-other programs were running), and 65.6 s and 81 s in earlier runs (the 81 s is
-`FULL-DENSITY-iter2.log`, `duration_s=81`; those logs are not in this checkout). The spread is
-unexplained, so treat 65 to 238 s as the range seen, from single runs. This Usage section owns the
+other programs were running), and 81 s in an earlier run (the 81 s is
+`FULL-DENSITY-iter2.log`, `duration_s=81`; that log is not in this checkout; the 75.1 s in
+`FULL-DENSITY-measure.log` is a scratch-script write without verification, not this command). The
+spread is unexplained, so treat 81 to 238 s as the range seen, from single runs. This Usage section owns the
 measured run figures; other documents point here. The Generator branch's own fresh-clone check
 (`FINAL-DOCS-iter1-fresh-clone-run1.log` and `FINAL-DOCS-iter1-fresh-clone.log`, 86.6 s for the same
 command; the 10.35 s of the Generate-tab UI tests comes from `TASK-7-1-1-iter1-ui-tests.log`) is
