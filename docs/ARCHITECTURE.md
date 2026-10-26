@@ -261,9 +261,9 @@ its own code; Module 2 behaviour is not yet verified.
 `generator/ui/generate_tab.py` draws the tab and `generate_app.py` is a short runner (two imports
 and one call; `streamlit run src/vl_data/generator/ui/generate_app.py`); the three-tab shell belongs to the BI
 module. `rows_to_scenario` turns the form values and the table rows into a `Scenario` (`float()` on
-every number, `int()` on the seed, stop rows lose `end_speed_cm_s`, a blank, NaN, infinite or true/false
-cell, an empty table or a bad seed raises a clear `ValueError`; ASSUMPTIONS A74, A80). `preview_figure`
-plots speed (cm/s) against time (s) from `motion.speed_profile`. A wrong form or table shows
+every number, stop rows lose `end_speed_cm_s`, a blank, NaN, infinite or true/false
+cell, an empty table raises a clear `ValueError`; the seed is not an input, the `Scenario`
+default 0 is used; ASSUMPTIONS A74, A80, A81). `preview_figure` plots speed (cm/s) against time (s) from `motion.speed_profile`. A wrong form or table shows
 `st.error` and no plot.
 
 The Generate button runs these steps in order (ASSUMPTIONS A70 to A80):

@@ -88,7 +88,12 @@ Segment = Annotated[MoveSegment | StopSegment, Field(discriminator="type")]
 
 
 class Scenario(BaseModel):
-    """A drive: seed (reserved for noise, part of the hash), start state, segments."""
+    """A drive: seed, start state, segments.
+
+    The seed is internal: reserved for future noise, not shown to users (not in the Generate
+    tab), default 0. It stays an accepted optional key in scenario files and is part of the
+    scenario hash (the model dump always includes it), so omitting it equals `seed: 0`.
+    """
 
     model_config = ConfigDict(extra="forbid")
 

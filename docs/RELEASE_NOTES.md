@@ -129,7 +129,6 @@ before the result. The demo prints no warning, because its shortest segment is e
 A scenario file looks like this:
 
 ```yaml
-seed: 0
 start: {x_cm: 0, y_cm: 0, z_cm: 0, speed_cm_s: 0}
 segments:
   - {type: stop, duration_s: 2.0}
@@ -137,6 +136,8 @@ segments:
   - {type: move, duration_s: 8.0, end_speed_cm_s: -300}
   - {type: stop, duration_s: 4.0}
 ```
+
+The optional `seed` key (a whole number, default 0) is still accepted in a scenario file.
 
 Speeds are cm/s and positive means forward. `move` changes speed in a straight line from the
 current speed to `end_speed_cm_s`. Durations must be a whole number of frames (a multiple of
@@ -154,7 +155,7 @@ python -m streamlit run src/vl_data/generator/ui/generate_app.py --server.headle
 that run used. Streamlit printed `Uvicorn server started on 127.0.0.1:8765` and `URL: http://127.0.0.1:8765`;
 the server answered `GET /` with HTTP 200 and `/_stcore/health` with `ok` (measured, in the fresh-clone
 log; an earlier run: `.claude/run-proofs/TASK-7-iter3-server.log`, local, git-ignored, A28). The page has a
-start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`, `seed`; this description of the page comes from the code, not from a browser run), a segment table that starts with the
+start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`; there is no seed box, the seed is hidden and is 0 for drives made in the tab (a scenario file can still set it); this description of the page comes from the code, not from a browser run), a segment table that starts with the
 demo rows (`type`, `duration_s` in steps of 0.0625 s, `end_speed_cm_s`; rows can be added and
 deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first works out the target folder (the first 12 characters of the scenario hash under `raw_dir`). If
 that folder already holds a drive that passes the full `verify_drive` check (every file is hashed again, shown in a
@@ -168,8 +169,7 @@ data)" (1,000 frames x 12,000,000 bytes at full density, computed; about 12,000 
 10-points-per-axis test body, computed). It then writes the drive under `raw_dir` with the same function
 the `generate` command uses, and shows the folder, the scenario hash and the frame count. A
 wrong form or table shows a red error and no plot. A bad cell (blank, text, true/false, not a number or infinite) names the segment and the field, for example "segment 0 duration_s must be a finite
-number"; a bad start field names the field ("start x_cm must be a finite number"); a cleared seed says "seed is blank; enter a
-whole number" and a seed that is not a number says "seed must be a whole number, got <value>"; a duration that
+number"; a bad start field names the field ("start x_cm must be a finite number"); a duration that
 is not a whole number of frames gets the scenario model's own message after "Invalid scenario:" (for example
 "duration_s 1.03 s is not a whole number of frames", from `generator/models.py`, worded differently from the cell
 messages); an empty table or a table over 2,000 frames

@@ -43,23 +43,15 @@ def _number(value: Any, what: str) -> float:
     return number
 
 
-def rows_to_scenario(
-    start: dict[str, float], rows: list[dict[str, Any]], seed: int | None
-) -> Scenario:
+def rows_to_scenario(start: dict[str, float], rows: list[dict[str, Any]]) -> Scenario:
     """Turn the start values (cm, cm/s) and segment-table rows into a validated Scenario.
 
-    Every number goes through float() and the seed through int(), because pydantic is strict
-    and a table gives numpy numbers. end_speed_cm_s is dropped for stop rows. The only error
-    raised is ValueError (pydantic's ValidationError is one): for an empty table, a blank (or
-    None seed), NaN, infinite, bool or unknown cell, or an invalid scenario. duration_s is in
-    s, end_speed_cm_s in cm/s.
+    Every number goes through float(), because pydantic is strict and a table gives numpy
+    numbers. end_speed_cm_s is dropped for stop rows. The seed is not an input: the Scenario
+    default (0) is used. The only error raised is ValueError (pydantic's ValidationError is
+    one): for an empty table, a blank, NaN, infinite, bool or unknown cell, or an invalid
+    scenario. duration_s is in s, end_speed_cm_s in cm/s.
     """
-    if seed is None:
-        raise ValueError("seed is blank; enter a whole number")
-    try:
-        seed_value = int(seed)
-    except (ValueError, OverflowError, TypeError):
-        raise ValueError(f"seed must be a whole number, got {seed!r}") from None
     if not rows:
         raise ValueError("the segment table is empty; add at least one segment")
     start_values = {name: _number(start.get(name), f"start {name}") for name in _START_FIELDS}
@@ -78,9 +70,7 @@ def rows_to_scenario(
                 row.get("end_speed_cm_s"), f"{where} end_speed_cm_s"
             )
         segments.append(segment)
-    return Scenario.model_validate(
-        {"seed": seed_value, "start": start_values, "segments": segments}
-    )
+    return Scenario.model_validate({"start": start_values, "segments": segments})
 
 
 def preview_figure(scenario: Scenario, config: Config) -> go.Figure:
@@ -206,7 +196,7 @@ def _generate(scenario: Scenario, config: Config) -> None:
 def render_generate_tab(config: Config) -> None:
     """Draw the form, preview and Generate button; Generate calls generate_to_disk.
 
-    The form has the start state (x, y, z in cm, speed in cm/s) and the seed; the table has
+    The form has the start state (x, y, z in cm, speed in cm/s); the table has
     one row per segment (duration_s in s, end_speed_cm_s in cm/s). Invalid input is shown as an
     error and never raises.
     """
@@ -216,7 +206,6 @@ def render_generate_tab(config: Config) -> None:
         name: columns[i].number_input(name, value=0.0, step=1.0, format="%.1f")
         for i, name in enumerate(_START_FIELDS)
     }
-    seed = st.number_input("seed", value=0, step=1, min_value=0)
     table = st.data_editor(
         _demo_table(),
         num_rows="dynamic",
@@ -229,7 +218,7 @@ def render_generate_tab(config: Config) -> None:
         },
     )
     try:
-        scenario = rows_to_scenario(start, list(table), seed)
+        scenario = rows_to_scenario(start, list(table))
     except ValueError as exc:  # includes pydantic ValidationError
         st.error(f"Invalid scenario: {exc}")
         return
