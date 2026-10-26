@@ -299,8 +299,8 @@ and one call; `streamlit run src/vl_data/generator/ui/generate_app.py`); the thr
 module. `rows_to_scenario` turns the form values and the table rows into a `Scenario` (`float()` on
 every number, stop rows lose `end_speed_cm_s`, a blank, NaN, infinite or true/false
 cell, an empty table raises a clear `ValueError`; the seed is not an input, the `Scenario`
-default 0 is used; ASSUMPTIONS A74, A80, A81). `preview_figure` plots speed (cm/s) against time (s) from `motion.speed_profile`. A wrong form or table shows
-`st.error` and no plot.
+default 0 is used; ASSUMPTIONS A74, A80, A81). `preview_figure` plots speed (cm/s) against
+time (s) from `motion.speed_profile`. A wrong form or table shows `st.error` and no plot.
 
 The Generate button runs these steps in order (ASSUMPTIONS A70 to A80):
 
@@ -513,7 +513,7 @@ python -m streamlit run src/vl_data/generator/ui/generate_app.py --server.headle
 that run used. Streamlit printed `Uvicorn server started on 127.0.0.1:8765` and `URL: http://127.0.0.1:8765`;
 the server answered `GET /` with HTTP 200 and `/_stcore/health` with `ok` (measured, in the fresh-clone
 log; an earlier run: `.claude/run-proofs/TASK-7-iter3-server.log`, local, git-ignored, A28). The page has a
-start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`; there is no seed box, the seed is hidden and is 0 for drives made in the tab (a scenario file can still set it); this description of the page comes from the code, not from a browser run), a segment table that starts with the
+start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`; there is no seed box). The seed is hidden and is 0 for drives made in the tab (a scenario file can still set it). This description of the page comes from the code, not from a browser run. The page also has a segment table that starts with the
 demo rows (`type`, `duration_s` in steps of 0.0625 s, `end_speed_cm_s`; rows can be added and
 deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first works out the target folder (the first 12 characters of the scenario hash under `raw_dir`). If
 that folder already holds a drive that passes the full `verify_drive` check (every file is hashed again, shown in a
