@@ -29,8 +29,8 @@ acceleration from the point cloud alone and showing that the result matches the 
 | 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. Evaluate against ground truth. | Outline |
 | 4 BI | One Streamlit app with three tabs: Generate, Clean, Analyze. | Outline |
 
-Shared code lives in `core/`: config loader, Arrow schemas, hashing, the manifest, and later the
-`Lake` class. Imports only point down: entry points, then modules, then core. Core never imports a
+Shared code lives in `core/`: config loader, Arrow schemas, hashing, the manifest, the `Lake`
+class and the lake table schemas. Imports only point down: entry points, then modules, then core. Core never imports a
 module.
 
 ## Folder structure
@@ -41,7 +41,7 @@ src/vl_data/
   core/                      config, hashing, schemas, manifest
   generator/                 Module 1: models, body, motion, drive, writer,
                              inverse, faults, cli, scenarios/, ui/
-  etl/                       Module 2 (built): config, keypoints, facts, rules,
+  etl/                       Module 2 (built): config, body, keypoints, facts, rules,
                              ingest, errors_doc, cli
   core/lake.py, lake_schemas.py   Module 2 (built): the Lake class and the table schemas
 config/default.yaml          fps, output folder, body, tolerances, fit parameters
@@ -63,7 +63,10 @@ Built so far: the project skeleton (`pyproject.toml`, `src/vl_data/__init__.py`,
 (`drive.py`, `writer.py`) and the generator's `generate` and `verify` commands
 (`generator/cli.py`, registered by the root `cli.py`). The back direction (`inverse.py`) and the
 `roundtrip` command are built, and so is the fault-injection helper (`faults.py`). The Generate
-tab (`generator/ui/`) is built.
+tab (`generator/ui/`) is built. Module 2 is built too: the lake (`core/lake.py`,
+`core/lake_schemas.py`), the ETL settings, the keypoint pick, the frame scan, the six rules, the
+ingest, the `ingest` and `error-codes` commands, and the generated `docs/ERROR_CODES.md`.
+Not built yet: Module 3 (the use-case algorithm), and the Clean and Analyze tabs of Module 4.
 
 ## Data flow inside the generator
 
@@ -76,7 +79,7 @@ tab (`generator/ui/`) is built.
    hashes, swap the folder into place, and verify it.
 
 `generate` in `drive.py` does steps 2 to 4 in memory and returns a `Drive` (scenario, hash, frames
-table, ground-truth table) by collecting `iter_frame_batches`, which yields record batches of 50 frames; at full density this is only for small drives. `write_drive` in `writer.py` does step 5 for such a drive. `generate_to_disk` streams the batches straight into the Parquet file (memory near one 600 MB batch), writes the ground truth and manifest, and then runs `verify_drive`; the command line uses `generate_to_disk`.
+table, ground-truth table) by collecting `iter_frame_batches`, which yields record batches of 50 frames; at full density this is only for small drives. `write_drive` in `writer.py` does step 5 for such a drive. `generate_to_disk` streams the batches straight into the Parquet file (one batch is 600 MB of points, and the measured peak working set was 2,859 MiB, so the peak is several times one batch; its parts were not measured), writes the ground truth and manifest, and then runs `verify_drive`; the command line uses `generate_to_disk`.
 
 How a drive is written:
 
@@ -94,8 +97,9 @@ How a drive is written:
 - Measured on the 1,000-frame demo at 1,000,000 points per frame (a scratch script with the same
   50-frame batching, `.claude/run-proofs/FULL-DENSITY-measure.log`): 75.1 s, peak working set
   2,859 MiB, `frames.parquet` 287,134,433 bytes with zstd (4,024,944,648 bytes with snappy). The
-  real `generate` command took 81 s including verification on 2026-10-24; its time in the
-  fresh-clone run of 2026-10-25 is in RELEASE_NOTES, Usage (measured, local, git-ignored, A28). The
+  real `generate` command took 65.6 s to 237.7 s including verification in single runs on one
+  machine (81 s on 2026-10-24; 237.7 s in the fresh-clone run of 2026-10-25, measured in
+  `FINAL-DOCS-M2-fresh-clone.log`); the spread is unexplained, see RELEASE_NOTES, Usage. The
   2,000-frame cap was not run (about 24 GB raw, about 0.6 GB on disk and about 2.5 minutes, scaled
   from this run).
 
@@ -139,7 +143,7 @@ What the Lake does not do:
 - The glob characters `*` and `?` in the lake path could only be tested on non-Windows systems, because Windows does not allow them in file names.
 - Symlinks or junctions planted inside the lake folder are not detected.
 
-## Module 2: loader and ETL (ingest, command line and error-code file built; full-density command-line run is the user's proof)
+## Module 2: loader and ETL (ingest, command line and error-code file built; full-density command-line run done on 2026-10-25)
 
 The lake storage (`core/lake.py`, `core/lake_schemas.py`), the ETL settings, the keypoint pick, the
 frame scan, the rules, the ingest (`etl/ingest.py`), the commands (`etl/cli.py`) and the
@@ -154,7 +158,10 @@ frames_expected, frames_in, frames_kept, frames_quarantined, frames_missing, key
 points_per_frame_in, keypoints_per_frame_out, one `quarantine_<code>` line per code, elapsed_s).
 It prints codes and counts only, never quarantine message text.
 
-Measured (2026-10-25, one Windows machine, `.claude/run-proofs/TASK-5-iter2-a.log`): `generate` of the 1,000-frame demo at 1,000,000 points per frame into `data/raw_proof`, then `ingest --all data/raw_proof --lake-dir warehouse`, took about 120 s of wall-clock time in total (start and finish times in the log). The ingest printed `status: ok`, `frames_expected: 1000`, `frames_kept: 1000`, `frames_quarantined: 0`, `keypoint_rows: 9000`, `points_per_frame_in: 1000000`, `keypoints_per_frame_out: 9` and `elapsed_s: 43.7`, and exited 0. One run, so it is a single measurement.
+Measured (2026-10-25, one Windows machine, `.claude/run-proofs/TASK-5-iter2-a.log`): `generate` of the 1,000-frame demo at 1,000,000 points per frame into `data/raw_proof`, then `ingest --all data/raw_proof --lake-dir warehouse`, took about 120 s of wall-clock time in total (start and finish times in the log). The ingest printed `status: ok`, `frames_expected: 1000`, `frames_kept: 1000`, `frames_quarantined: 0`, `keypoint_rows: 9000`, `points_per_frame_in: 1000000`, `keypoints_per_frame_out: 9` and `elapsed_s: 43.7`, and exited 0. One run, so it is a single measurement. In the fresh-clone run of
+the same day (`.claude/run-proofs/FINAL-DOCS-M2-fresh-clone.log`) `ingest --all data/raw --lake-dir
+warehouse` printed `elapsed_s: 49.1` (wall 50.9 s) and a single-folder `ingest` printed
+`elapsed_s: 45.8` (wall 47.4 s), both exit 0 with the same counts; `generate` took 237.7 s there.
 
 - `ingest <drive_dir>` or `ingest --all <raw_dir>` (exactly one of the two). `--all` takes only
   direct subfolders named by 12 lowercase hex characters, sorted; anything else prints
@@ -184,10 +191,9 @@ first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working s
 1,718 MiB (`.claude/run-proofs/TASK-4-measure.log`). One first run in
 `.claude/run-proofs/TASK-4-measure-iter2.log` took 3,730 s (its re-ingest took 44.5 s); CPU time
 was only about 54 s while it ran. The cause is unknown and it was not reproduced in two later runs,
-so it is an open outlier: the next full-density run should log free memory and disk. The frame scan
-alone took 91 s and 1.59 GiB before the speed-up; after it, a 200-frame benchmark (100 points per
-axis) measured about 39 s per 1,000 frames (2.4 times faster). These are single measurements, not
-a benchmark suite.
+so it is an open outlier: the next full-density run should log free memory and disk. A frame scan
+of 91 s and 1.59 GiB before a speed-up was measured once in a session; the output was not saved to
+a log. These are single measurements, not a benchmark suite.
 
 A drive folder is treated as hostile input. Before anything large is allocated: the manifest's points
 per frame must not exceed `max_points_per_frame` (2,000,000 points); the lattice is built only after
@@ -208,35 +214,38 @@ full by `verify_drive` but never opened or parsed by the ingest.
 | `etl/keypoints.py` | `extract_keypoints` | Input is frames x points x 3 integers (cm). Output is frames x keypoints x 3 float64 (cm), in the order of the keypoint list. A corner is picked by lattice index; the centroid is the float64 mean of all points. Float input and out-of-range indices are refused. |
 | `config/etl.yaml` | the nine keypoints, speed limit 9,000 cm/s, margin 2 cm, chunk size 128 MiB, row-group cap 2,048 MiB | The built-in defaults in `etl/config.py` are identical to this file (checked by a test). |
 
-The corner lattice indices are derived from the number of points per axis n as `bx*(n-1)*n*n + by*(n-1)*n + bz*(n-1)`: 0, 9, 90, 99, 900, 909, 990, 999 at n = 10, and 0, 99, 9900, 9999, 990000, 990099, 999900, 999999 at n = 100 (both checked by a test). The ETL gets n from the drive: `etl/body.py` takes it from the manifest's `points_per_frame` (the integer cube root) and the cube size from the core config, until the generator adds body keys to the manifest. A timing check on 2026-10-24 showed `extract_keypoints` takes 0.045 s for 4 frames of 1,000,000 points (48 MB) on the development machine (Windows 11, 15.7 GB RAM).
+The corner lattice indices are derived from the number of points per axis n as `bx*(n-1)*n*n + by*(n-1)*n + bz*(n-1)`: 0, 9, 90, 99, 900, 909, 990, 999 at n = 10, and 0, 99, 9900, 9999, 990000, 990099, 999900, 999999 at n = 100 (both checked by a test). The ETL gets n from the drive: `drive_body(manifest)` in `etl/body.py` reads the body (`size_cm`, `points_per_axis`) from `manifest.body` (schema version 2); it does not use the core config. A timing check on 2026-10-24 showed `extract_keypoints` takes 0.045 s for 4 frames of 1,000,000 points (48 MB) on the development machine (Windows 11, 15.7 GB RAM).
 
 ### Frame scan and rules (built)
 
 | Module | What it holds | Rules worth knowing |
 |---|---|---|
-| `etl/facts.py` | `scan_frames` | Streams `frames.parquet` in chunks and returns two things: one small record per row (frame number, timestamp, payload size, payload SHA-256, whether the cloud is valid, centroid) and the keypoints of every valid frame as a rows x keypoints x 3 array (NaN for an invalid frame). A bad payload never raises; a null frame number or timestamp, or a missing column, raises one `ValueError` (the caller checks the schema first). It never opens the ground-truth file. The size is checked before the payload is decoded. The deviation from the lattice is computed in int32 when that cannot overflow (int64 otherwise), the centroid is an exact integer sum divided by the point count, and the SHA-256 runs in a second thread; on a 200-frame drive of 100 points per axis this took 39 ms per frame against 94 to 100 ms for the earlier plain version (2.4 to 2.5 times faster; reading and decompressing the Parquet is about 25 ms of the 39). |
+| `etl/facts.py` | `scan_frames` | Streams `frames.parquet` in chunks and returns two things: one small record per row (frame number, timestamp, payload size, payload SHA-256, whether the cloud is valid, centroid) and the keypoints of every valid frame as a rows x keypoints x 3 array (NaN for an invalid frame). A bad payload never raises; a null frame number or timestamp, or a missing column, raises one `ValueError` (the caller checks the schema first). It never opens the ground-truth file. The size is checked before the payload is decoded. The deviation from the lattice is computed in int32 when that cannot overflow (int64 otherwise), the centroid is an exact integer sum divided by the point count, and the SHA-256 runs in a second thread (the speed-up was measured once in a session, not saved to a log). |
 | `etl/ingest.py` | `ingest_drive`, `IngestResult` | The entry point. Runs the gates, the scan, the rules and the three table swaps (next section). |
 | `etl/rules.py` | `RULES`, `RuleContext`, `run_rules` | Six rules with their codes, meaning, detection text and example fault. Drive rules (VL-005) and frame rules (VL-001 to VL-004, VL-006). VL-006 runs only on frames that passed the others. |
-| `etl/body.py` | `expected_frame_count` | The number of frames the scenario implies, used by VL-001. |
+| `etl/body.py` | `drive_body`, `expected_frame_count` | `drive_body(manifest)` returns the body from `manifest.body`; `expected_frame_count(manifest)` is the number of frames the scenario implies, used by VL-001. |
 
-On 2026-10-25 (ingest added) the ETL tests numbered 214 (481 in the whole suite, after the hostile-folder repair pass), and line coverage of the ETL package was 99% (`ingest.py` and `facts.py` 100%; the two uncovered lines are in `rules.py`). Ingesting the demo drive on a 1,000-point test body kept 1,000 of 1,000 frames and wrote 9,000 keypoint rows (checked by a test); each of the five frame faults gave exactly one quarantine row; a changed byte, a missing manifest, a schema-1 manifest, a renamed drive folder and a renamed points column each rejected the whole drive; ingesting twice left all three table files byte-identical.
+On 2026-10-25 (final state of this branch) the ETL tests numbered 284 and the whole suite 649 (645 passed, 4 skipped in 64 s, rerun on 2026-10-26 for the final docs pass; the 99% coverage figure is the Loader session's and was not re-measured then). At the earlier ingest milestone the same day the ETL tests numbered 214 (481 in the whole suite, after the hostile-folder repair pass), and line coverage of the ETL package was 99% (`ingest.py` and `facts.py` 100%; the two uncovered lines are in `rules.py`). Ingesting the demo drive on a 1,000-point test body kept 1,000 of 1,000 frames and wrote 9,000 keypoint rows (checked by a test); each of the five frame faults gave exactly one quarantine row; a changed byte, a missing manifest, a schema-1 manifest, a renamed drive folder and a renamed points column each rejected the whole drive; ingesting twice left all three table files byte-identical.
 
 On 2026-10-24 the ETL package had 151 tests (381 in the whole suite), and line coverage of the ETL package was 99%. Running the rules on the demo drive (1,000 frames on a 125-point test body) gave no violations, and each of the six generator faults produced exactly its own code. The full-density behaviour of the scan is not measured yet.
 
 On 2026-10-23 the settings and keypoint modules had 71 tests (201 in the whole suite), and line coverage of the ETL package was 100%.
 
-What goes in: a drive folder `data/raw/<hash12>/` with the full point cloud (1,000 points per
-frame). What comes out: three tables in the lake, `keypoints`, `quarantine` and `lineage`, each
+What goes in: a drive folder `data/raw/<hash12>/` with the full point cloud (1,000,000 points per
+frame at the shipped density). What comes out: three tables in the lake, `keypoints`, `quarantine` and `lineage`, each
 stored as `<table>/drive=<hash12>/part-0.parquet` and queryable with DuckDB.
 
 Steps for one drive:
 
 1. **Gates, cheapest first.** The folder name must be a valid drive id (otherwise `ingest_drive`
    raises `ValueError` and writes nothing). Then: the manifest reads; the folder name equals the
-   first 12 hex of the scenario hash; the schema version is in the supported list; the fps divides
-   a second; the body and scenario are valid; `frames.parquet` is listed; and only then every file
-   hash is checked (`verify_drive`, the slow step). Any failure rejects the whole drive before a
-   frame is read. The frame rate and frame spacing come from the manifest, not from a core config.
+   first 12 hex of the scenario hash (after a check that the hash is 64 lowercase hex characters);
+   the schema version is in the supported list; the fps divides a second; the points per frame are
+   within `max_points_per_frame`; the body and scenario are valid; `frames.parquet` is listed; the
+   keypoint specs fit the drive's point count (a spec that does not is a configuration error and
+   raises `ValueError`, ASSUMPTIONS M2-A34); and only then every file hash is checked
+   (`verify_drive`, the slow step), followed by the lattice build. Any failure rejects the whole
+   drive before a frame is read. The frame rate and frame spacing come from the manifest, not from a core config.
 2. **Schema gate.** Open the frames file (an unreadable file rejects the drive), refuse any row
    group above `max_row_group_mib` (uncompressed), and compare the columns with the agreed frames
    schema (VL-005).
@@ -272,8 +281,8 @@ Steps for one drive:
 | VL-005 | The frames file's columns differ from the agreed schema. Rejects the drive. |
 | VL-006 | The centroid is farther from the last accepted frame than 9,000 cm/s allows (about 564.5 cm per frame, with a 2 cm margin). |
 
-The speed limit tests position only. Per-frame acceleration is too noisy (the generator plan
-measured an error of 452 cm/s^2) to test.
+The speed limit tests position only. Per-frame acceleration is too noisy to test (a per-frame
+error of 452 cm/s^2 was reported by a throwaway run; that figure is not logged and is not evidence).
 
 ### What "not atomic" means for the three tables
 
@@ -319,15 +328,15 @@ whole centimetres.
 | Source | Generator writes a drive to disk | Simplest valid source | A service or a stream | Many consumers or live data |
 | Config | YAML plus a validating Python loader | Readable, fails early on bad values | Environment variables only, JSON | Many deployment environments |
 | Scenario validation | pydantic | Typed models with clear errors | dataclasses plus hand checks | Never needed so far |
-| Hashing | SHA-256 over canonical JSON (scenario) and file bytes (files) | Standard, checkable with common tools | Content hashes, UUIDs | Needing stability across library versions |
+| Hashing | SHA-256 over canonical JSON (body and scenario) and file bytes (files) | Standard, checkable with common tools | Content hashes, UUIDs | Needing stability across library versions |
 | Raw file format | Parquet via PyArrow, one row per frame | Columnar, compact, readable by every tool | One row per point, CSV, HDF5 | Per-point SQL |
 | Query | DuckDB over Parquet folders | SQL with no server | Trino, Athena | Many users, large data |
 | ETL engine | pandas and numpy | Data is small, code is clear | Polars, Spark | Data no longer fits one machine |
 | Lake format | Plain Parquet, Hive-style folders, behind one class | Nothing to run | Apache Iceberg, Delta Lake | Many writers, schema changes, time travel |
 | Idempotent writes | Write to a temp folder, then swap the drive folder | Re-running never duplicates, a crash never loses old data | Blind append, upsert | Concurrent writers |
 | Validation | Rule registry with error codes | Explicit and testable; the same registry builds the error-code document | Great Expectations, pandera | Many datasets and owners |
-| Keypoint table layout (planned) | Long: one row per keypoint | Generic; the keypoint list is a YAML change; simple SQL filter by name | Wide: 27 coordinate columns per frame | Heavy column maths on the corners |
-| Bad frames (planned) | Quarantine only the failed frame, with a details-only row | One bad frame does not cost the drive; the raw frame stays in `data/raw/` | Reject the whole drive; copy the raw bytes | A consumer needs replay from the lake alone |
+| Keypoint table layout | Long: one row per keypoint | Generic; the keypoint list is a YAML change; simple SQL filter by name | Wide: 27 coordinate columns per frame | Heavy column maths on the corners |
+| Bad frames | Quarantine only the failed frame, with a details-only row | One bad frame does not cost the drive; the raw frame stays in `data/raw/` | Reject the whole drive; copy the raw bytes | A consumer needs replay from the lake alone |
 | Ingest passes | One chunked pass: facts and keypoints together (user decision 2026-10-25) | Bounded memory, rules see the whole sequence from the facts, and the frames file is decoded once instead of twice | Two passes: facts, then keypoints | A rule needs cloud data that the stored facts do not hold |
 | BI | Streamlit and Plotly | One Python file per view | Superset, Grafana | Non-Python users |
 | CLI | Typer | Typed commands | argparse | None |
@@ -422,7 +431,8 @@ interval (`frame_interval_ns`, ns) in size; `dx_cm == 0`; an input table whose o
 equal or not increasing; final timestamps of the surviving rows that are not strictly increasing in
 original row order (dropped rows and `DuplicateFrame` copies are left out); `CorruptPoints` on a
 frame with under 12 bytes; and a `dx_cm` that overflows int32. Each fault is intended to trigger
-its own code; Module 2 behaviour is not yet verified.
+its own code. Module 2 is checked against all six: each of the six faults is covered by
+`tests/etl/test_e2e.py` and `tests/etl/test_ingest.py`, which ingest a faulty drive and expect its code.
 
 ## Generate tab
 

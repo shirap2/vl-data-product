@@ -17,7 +17,7 @@ from vl_data.core.schemas import FRAMES_SCHEMA
 from vl_data.etl.config import LimitsConfig
 
 VIOLATION_COLUMNS: list[str] = ["row_index", "frame_id", "code", "message"]
-_BYTES_PER_POINT = 12  # bytes; core.schemas keeps its constant private, so one local copy
+_BYTES_PER_POINT = 12  # bytes; a local copy of the public core.schemas.BYTES_PER_POINT
 _INT64_MAX = 2**63 - 1
 
 
