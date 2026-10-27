@@ -85,7 +85,7 @@ def ingest_drive(drive_dir: Path, lake: Lake, etl: EtlConfig) -> IngestResult:
     opened again by the scan).
 
     Gate order (cheap checks first, so a bad manifest never costs a full read): see
-    docs/ASSUMPTIONS.md M2-A34, then verify_drive, the lattice, the frames-file footer (row counts
+    docs/extras/ASSUMPTIONS.md M2-A34, then verify_drive, the lattice, the frames-file footer (row counts
     at most 2 * expected frames + 1000 rows; each row group at most etl.max_row_group_mib MiB as
     the footer claims) and the schema (VL-005); then one chunked scan and the frame rules.
 

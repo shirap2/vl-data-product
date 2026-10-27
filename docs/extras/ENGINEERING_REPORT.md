@@ -117,7 +117,7 @@ Every tracked source, config, doc and tool file. Every tracked source, config, d
 | `ENGINEERING_REPORT.md` | Whole project | This report as Markdown, with Mermaid diagrams that GitHub draws. |
 | `ERROR_CODES.md` | Module 2 | List of error codes VL-001 to VL-006. Generated from the rule registry; a test fails if the file drifts. |
 | `RELEASE_NOTES.md` | Whole project | Product description, usage with commands, known issues, coming soon. |
-| `SUPPORTING_DOCUMENTATION.md` | Whole project | Generated single file: error codes, architecture and release notes in the order the assignment lists them. |
+| `SUPPORTING_DOCUMENTATION.md` | Removed | The error codes, architecture and release notes are now three short files in `docs/`; the long versions are in `docs/extras/`. |
 | `USE_CASES.md` | Module 3 | Six candidate use cases for the signal. One (ego-motion) is implemented. |
 | `USE_CASE_ERRORS.md` | Module 3 | Named failures of the use case (MotionError, SQL refusals) and what to do about each. |
 

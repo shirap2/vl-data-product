@@ -26,18 +26,21 @@ about 1.5 minutes and about 290 MB on disk. Run the app from the repository root
 
 ## Documentation
 
+The deliverables are short and in `docs/`:
+
 | Document | What it holds |
 |---|---|
 | [docs/USE_CASES.md](docs/USE_CASES.md) | Six use cases considered, and the one implemented |
-| [docs/SUPPORTING_DOCUMENTATION.md](docs/SUPPORTING_DOCUMENTATION.md) | Error codes, architecture and design, release notes in one file |
-| [docs/ERROR_CODES.md](docs/ERROR_CODES.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) | The three parts as separate files (release notes: description, usage, known issues, coming soon) |
-| [docs/ENGINEERING_REPORT.pdf](docs/ENGINEERING_REPORT.pdf) | Illustrated report on all four modules |
-| [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) | Every design decision and assumption |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Flow, data model, technology choices and alternatives |
+| [docs/ERROR_CODES.md](docs/ERROR_CODES.md) | The possible error codes |
+| [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) | Product description, usage, known issues, coming soon |
 | [docs/LLM_USAGE.md](docs/LLM_USAGE.md) | Model, approach and main prompts |
 
-Technology choices and their alternatives are in the design-choices tables of the architecture
-document. Timings in the docs were measured on one Windows machine. Some documents cite logs under
-`.claude/run-proofs/`; those are local development logs that are not in this repository.
+More detail is in [docs/extras/](docs/extras/): the detailed architecture and release notes, every
+design assumption, and an illustrated engineering report
+([PDF](docs/extras/ENGINEERING_REPORT.pdf)). Timings were measured on one Windows machine. The
+extras cite logs under `.claude/run-proofs/`; those are local development logs that are not in
+this repository.
 
 ## Tests
 
