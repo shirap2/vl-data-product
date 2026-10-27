@@ -186,6 +186,7 @@ def test_invalid_drive_id_rejected(clean: BiDrive, tmp_path: Path) -> None:
         assert isinstance(hint, MotionHint)
         assert "invalid drive id" in hint.problem
         assert hint.command is None
+        assert not hint.can_compute
 
 
 def _hint(d: BiDrive, drive: str | None = None, client: VLClient | None = None) -> MotionHint:
@@ -198,6 +199,11 @@ def test_hint_missing_motion_of_ok_drive_gives_motion_command(unmotioned: BiDriv
     assert unmotioned.drive_id in hint.problem
     assert "no motion table" in hint.problem
     assert hint.command == motion_command(unmotioned.drive_id, unmotioned.root / "lake")
+    assert hint.can_compute
+
+
+def test_hint_ok_drive_with_motion_can_compute(clean: BiDrive) -> None:
+    assert _hint(clean).can_compute
 
 
 def test_hint_rejected_drive_gives_ingest_command_not_motion(rejected: BiDrive) -> None:
@@ -207,6 +213,7 @@ def test_hint_rejected_drive_gives_ingest_command_not_motion(rejected: BiDrive) 
     expected = ingest_command(rejected.drive_dir.parent, rejected.drive_id, rejected.root / "lake")
     assert hint.command == expected
     assert " motion " not in expected
+    assert not hint.can_compute
 
 
 def test_hint_unknown_drive_gives_ingest_command(clean: BiDrive) -> None:
@@ -215,6 +222,7 @@ def test_hint_unknown_drive_gives_ingest_command(clean: BiDrive) -> None:
     expected = ingest_command(clean.drive_dir.parent, UNKNOWN_DRIVE, clean.root / "lake")
     assert hint.command == expected
     assert " motion " not in expected
+    assert not hint.can_compute
 
 
 @pytest.mark.parametrize("error", [pa.ArrowInvalid("C:/secret/path"), ValueError("C:/secret/path")])
@@ -223,6 +231,7 @@ def test_hint_unreadable_lineage_is_path_free(clean: BiDrive, error: Exception) 
     assert hint.problem == f"cannot read the lineage: {type(error).__name__}"
     assert hint.command is None
     assert "secret" not in hint.problem
+    assert not hint.can_compute
 
 
 def test_hint_lineage_without_status_column_is_path_free_and_does_not_raise(clean: BiDrive) -> None:
@@ -231,6 +240,7 @@ def test_hint_lineage_without_status_column_is_path_free_and_does_not_raise(clea
     assert "cannot read the lineage" in hint.problem
     assert "KeyError" in hint.problem
     assert hint.command is None
+    assert not hint.can_compute
 
 
 def test_hint_two_lineage_rows_is_unexpected_not_rejected(clean: BiDrive) -> None:
@@ -238,6 +248,7 @@ def test_hint_two_lineage_rows_is_unexpected_not_rejected(clean: BiDrive) -> Non
     hint = _hint(clean, client=stub)
     assert hint.command is None
     assert "unexpected lineage rows (2)" in hint.problem
+    assert not hint.can_compute
     assert "rejected" not in hint.problem
     assert clean.drive_id in hint.problem
     assert str(clean.root) not in hint.problem

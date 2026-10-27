@@ -13,6 +13,7 @@ import yaml
 from streamlit.testing.v1 import AppTest
 
 import vl_data.bi.ingest_panel as panel_module
+import vl_data.bi.lake_lock as lake_lock_module
 from vl_data.bi.ingest_panel import pending_raw_drives, run_ingest
 from vl_data.core.config import Config
 from vl_data.core.lake import Lake
@@ -483,7 +484,7 @@ def test_run_ingest_unexpected_error_gives_fixed_text(
     _folder(tmp_path, HEX_A)
     monkeypatch.setattr("vl_data.bi.ingest_panel.ingest_drive", _boom(RuntimeError("C:/secret")))
     assert run_ingest(tmp_path, HEX_A, tmp_path / "lake") == "Ingest failed unexpectedly."
-    assert not panel_module._LOCK.locked()
+    assert not lake_lock_module.LAKE_LOCK.locked()
 
 
 def test_run_ingest_value_error_from_ingest_drive(
@@ -494,7 +495,7 @@ def test_run_ingest_value_error_from_ingest_drive(
     result = run_ingest(tmp_path, HEX_A, tmp_path / "lake")
     assert isinstance(result, str)
     assert "secret" not in result
-    assert not panel_module._LOCK.locked()
+    assert not lake_lock_module.LAKE_LOCK.locked()
 
 
 def test_busy_lock_blocks_ingest_and_is_not_released_by_the_loser(
@@ -503,14 +504,14 @@ def test_busy_lock_blocks_ingest_and_is_not_released_by_the_loser(
     called: list[str] = []
     monkeypatch.setattr("vl_data.bi.ingest_panel.ingest_drive", lambda *a, **k: called.append("x"))
     _folder(tmp_path, HEX_A)
-    assert panel_module._LOCK.acquire(blocking=False)
+    assert lake_lock_module.LAKE_LOCK.acquire(blocking=False)
     try:
         result = run_ingest(tmp_path, HEX_A, tmp_path / "lake")
         assert result == "Another ingest is running. Try again when it has finished."
         assert called == []
-        assert panel_module._LOCK.locked()  # still held by the first ingest
+        assert lake_lock_module.LAKE_LOCK.locked()  # still held by the first ingest
     finally:
-        panel_module._LOCK.release()
+        lake_lock_module.LAKE_LOCK.release()
 
 
 def test_lock_is_released_after_success_and_after_rejection(
@@ -518,13 +519,13 @@ def test_lock_is_released_after_success_and_after_rejection(
 ) -> None:
     raw = _raw_with(small_drive, tmp_path)
     assert isinstance(run_ingest(raw, small_drive.name, tmp_path / "lake"), IngestResult)
-    assert not panel_module._LOCK.locked()
+    assert not lake_lock_module.LAKE_LOCK.locked()
     with (raw / small_drive.name / "frames.parquet").open("ab") as handle:
         handle.write(b"x")
     result = run_ingest(raw, small_drive.name, tmp_path / "lake")
     assert isinstance(result, IngestResult)
     assert result.status == "rejected"
-    assert not panel_module._LOCK.locked()
+    assert not lake_lock_module.LAKE_LOCK.locked()
 
 
 def test_selected_second_drive_is_kept_across_reruns(bi_config: Config, tmp_path: Path) -> None:

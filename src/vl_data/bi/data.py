@@ -44,6 +44,7 @@ class MotionHint:
 
     problem: str  # plain text, never a file path
     command: str | None  # PowerShell command that fixes the problem, when there is one
+    can_compute: bool = False  # True only for exactly one lineage row with status ok
 
 
 @dataclass(frozen=True)
@@ -143,7 +144,7 @@ def motion_hint(client: VLClient, raw_dir: Path, lake_dir: Path, drive: str) -> 
         problem = f"drive {drive!r} was rejected at ingest; fix the raw data and re-ingest"
         return MotionHint(problem, ingest)
     problem = f"drive {drive!r} has no motion table; compute it first"
-    return MotionHint(problem, motion_command(drive, lake_dir))
+    return MotionHint(problem, motion_command(drive, lake_dir), can_compute=True)
 
 
 def _kind(error: Exception) -> str:

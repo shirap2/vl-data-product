@@ -7,7 +7,6 @@ Units: frames and rows are counts; folder modification times are seconds (st_mti
 """
 
 import re
-import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,6 +14,7 @@ import pyarrow as pa
 import streamlit as st
 import yaml
 
+from vl_data.bi.lake_lock import try_lake_lock
 from vl_data.core.config import Config
 from vl_data.core.lake import Lake
 from vl_data.etl.config import load_etl_config
@@ -28,7 +28,6 @@ LAST_INGESTED_KEY = "bi_last_ingested"  # session key: the shell selects this dr
 _BUSY = "Another ingest is running. Try again when it has finished."
 _NOT_AVAILABLE = "That drive folder is not available."
 _UNEXPECTED = "Ingest failed unexpectedly."
-_LOCK = threading.Lock()  # one ingest at a time per server process
 _SLOW_NOTE = "Ingesting reads the whole drive; a large drive can take minutes. Keep this page open."
 
 
@@ -97,10 +96,10 @@ def run_ingest(raw_dir: Path, drive: str, lake_dir: Path) -> IngestResult | str:
     text. Config errors, write failures and any other failure become a short text with no file
     path and no config value.
 
-    The lake has a single writer. A module-level lock (taken without waiting) allows one ingest
-    at a time inside this server process; a second call returns a "busy" text and does not call
-    ingest_drive. The lock does NOT cover the command line `ingest`, nor a second server
-    process: do not run those at the same time.
+    The lake has a single writer. The shared lake lock (bi/lake_lock.py, taken without waiting)
+    allows one lake write (ingest or motion) at a time inside this server process; a second
+    call returns a "busy" text and does not call ingest_drive. The lock does NOT cover the
+    command line `ingest`, nor a second server process: do not run those at the same time.
 
     An unexpected exception is turned into a fixed text on purpose and is not logged: its type
     name and message can hold file paths or config values.
@@ -112,17 +111,16 @@ def run_ingest(raw_dir: Path, drive: str, lake_dir: Path) -> IngestResult | str:
         usable = False
     if not usable:
         return _NOT_AVAILABLE
-    if not _LOCK.acquire(blocking=False):
-        return _BUSY
-    try:
-        etl = load_etl_config()
-        return ingest_drive(folder, Lake(lake_dir), etl)
-    except (ValueError, OSError, yaml.YAMLError, pa.ArrowException) as error:
-        return _problem_text(error)
-    except Exception:  # noqa: BLE001 - never show str(error): it can hold paths or values
-        return _UNEXPECTED
-    finally:
-        _LOCK.release()
+    with try_lake_lock() as acquired:
+        if not acquired:
+            return _BUSY
+        try:
+            etl = load_etl_config()
+            return ingest_drive(folder, Lake(lake_dir), etl)
+        except (ValueError, OSError, yaml.YAMLError, pa.ArrowException) as error:
+            return _problem_text(error)
+        except Exception:  # noqa: BLE001 - never show str(error): it can hold paths or values
+            return _UNEXPECTED
 
 
 def _draw_outcome(drive: str, outcome: IngestResult | str) -> None:

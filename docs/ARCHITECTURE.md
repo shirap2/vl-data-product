@@ -700,8 +700,8 @@ Clean, Analyze and SQL. The first three are in the
 design; the SQL tab is a user decision of 2026-10-26, added so a user can ask the lake their own
 question. A sidebar selector, "Drive", picks a drive from the lake, and every tab shows the
 scenario hash of that drive as a badge. The package is `vl_data.bi`. It uses `VLClient` and
-`render_generate_tab` as they are, writes to the lake only through the ingest panel (on a click,
-through `ingest_drive`) and edits no Module 1, 2 or 3 file. Module 4 adds no error codes: the
+`render_generate_tab` as they are, writes to the lake only through the ingest panel and the motion panel (on a click,
+through `ingest_drive` and `compute_motion`) and edits no Module 1, 2 or 3 file. Module 4 adds no error codes: the
 Clean tab shows the existing VL-001 to VL-006 and the drive-level code `INTEGRITY` from
 `docs/ERROR_CODES.md`.
 
@@ -747,16 +747,31 @@ that `streamlit run` starts.
   panel's own overhead on a full-density drive is not measured. The page is blocked while the
   ingest runs, so a large drive can take minutes. The result is kept in session state, the page
   reruns so the sidebar lists the drive, and the result line is drawn once. A drive the ETL
-  rejects is shown as a warning that points to the Clean tab, not as an error. This is the only
-  lake write of the app; the lake has a single writer, so do not run the command line
-  `ingest` at the same time.
-- Analyze: only the stored motion: three charts (centroid x in cm, velocity in cm/s,
-  acceleration in cm/s^2, against time in s), drawn with no click and no raw folder. The
-  centroid x is the raw centroid, not corrected. When the drive has no stored motion the tab
-  shows a message and the exact command: an ingested drive with status ok gets the `motion`
-  command; a drive that is not ingested, or was rejected, gets the `ingest` command; a drive with
-  more than one lineage row gets a problem text and no command (from reading `motion_hint` in
-  `bi/data.py`, not run). The tab never reads ground truth.
+  rejects is shown as a warning that points to the Clean tab, not as an error. This is one of the
+  two lake writes of the app (the other is the motion panel below); the lake has a single
+  writer, so do not run the command line `ingest` at the same time.
+- Analyze: the stored motion: three charts (centroid x in cm, velocity in cm/s, acceleration in
+  cm/s^2, against time in s), drawn with no raw folder. The centroid x is the raw centroid, not
+  corrected. `motion_hint` (in `bi/data.py`) now also returns `can_compute`, true only when the
+  drive has exactly one lineage row with status ok. States: (1) ok drive, no motion: an info
+  "Motion is not computed yet", the button "Compute motion" and the `motion` command as the
+  command-line alternative, no error; (2) ok drive with motion: the charts and the button
+  "Recompute motion"; (3) no motion and not computable: the reason and, when one exists, the
+  `ingest` command (not ingested or rejected), or a problem text with no command (unreadable or
+  more than one lineage row), and no button; (4) motion present but lineage not ok: the charts
+  and a warning that the charts are from an earlier run, and no button. The panel
+  (`bi/motion_panel.py`) runs `compute_motion`, the function the `motion` command calls, inside
+  an `st.status` block; the result (frames read, estimated, null) is kept in session state,
+  the page reruns so the charts appear at once, and the result is drawn once and only for the
+  selected drive. A `MotionError` text (it names the drive, a status and counts, never a path)
+  is shown cut to 200 characters; every other failure is a fixed text. A re-ingest does not
+  remove the old motion table: Recompute is the fix after a re-ingest. The tab never reads
+  ground truth.
+- One lock for lake writes: `bi/lake_lock.py` holds one in-process lock, taken without waiting
+  by both the ingest panel and the motion panel. A second write in the same server process gets
+  a busy text ("Another ingest is running ..." or "Another write to the lake is running ...")
+  and nothing is called. The lock does not cover the command line or a second server process.
+  Each panel keeps its own busy text.
 - SQL: a dropdown of five example queries fills a text box; Run sends the text to
   `VLClient.sql` (it runs the text with DuckDB, an embedded SQL engine), which accepts one SELECT over the views `keypoints`, `quarantine`, `lineage` and
   `motion`. The result table shows at most 10,000 rows and states the total. A non-SELECT, a

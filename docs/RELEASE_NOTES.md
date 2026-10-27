@@ -16,7 +16,7 @@ speeds. All data is synthetic.
 
 Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames. The Python SDK (`VLClient`) and SQL read the lake.
 
-Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored centroid position, velocity and acceleration; SQL runs one SELECT over the lake. The app reads the lake. It writes in two places: the Generate tab writes a raw drive, and the ingest panel also writes the lake through `ingest_drive`, on a click.
+Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored centroid position, velocity and acceleration; SQL runs one SELECT over the lake. The app reads the lake. It writes in two places: the Generate tab writes a raw drive, the ingest panel writes the lake through `ingest_drive`, on a click, and the Compute motion button on the Analyze tab writes the motion table through `compute_motion`, on a click.
 
 ## What is in this version
 
@@ -328,12 +328,19 @@ With an empty lake the Generate tab has no badge and the other three tabs show a
   drive already in the lake can be ingested again ("re-ingest"). Command line alternative:
   `python -m vl_data ingest '<raw>\<drive>' --lake-dir '<lake>'` (do not run both at once; the
   lake has a single writer, and the in-process lock of the panel does not cover the command line).
-- Analyze: draws only the stored motion: centroid x (cm), velocity (cm/s) and acceleration
-  (cm/s^2) against time (s), from the lake; it needs no click and no raw folder. If the drive was
-  ingested with status ok but has no stored motion, the tab prints
-  `python -m vl_data motion <drive> --lake-dir '<lake>'`. If the drive is not ingested, or was
-  rejected at ingest, it prints the `ingest` command instead. If the drive has more than one
-  lineage row, it shows a problem text and no command (from reading the code, not run).
+- Analyze: draws the stored motion: centroid x (cm), velocity (cm/s) and acceleration (cm/s^2)
+  against time (s), from the lake; it needs no raw folder. If the drive was ingested with status
+  ok but has no stored motion, the tab says "Motion is not computed yet" and shows the button
+  "Compute motion"; command line alternative:
+  `python -m vl_data motion <drive> --lake-dir '<lake>'`. With motion present the tab shows the
+  charts and a button "Recompute motion" (use it after a re-ingest). The result (frames read,
+  estimated, null) shows once after a click. If the drive is not ingested, or was rejected at
+  ingest, there is no button and the tab prints the `ingest` command instead. If the drive was
+  rejected after motion was stored, the charts show with a warning that they are from an
+  earlier run and no button. If the drive has more than one lineage row, it shows a problem
+  text and no command (from reading the code, not run). Do not run the command line `motion`
+  and a panel click at the same time; the panels share one in-process lock that the command line
+  does not take.
 - SQL: a dropdown "Example query" with five examples (Quarantine rows per code; Peak speed
   (cm/s); Kept vs rejected frames; First 20 centroid positions (cm); All drives with status)
   fills the box "SQL (one SELECT only)". Run sends it to `VLClient.sql`, which runs it with DuckDB
@@ -382,6 +389,7 @@ covers. The page was not opened in a browser by hand, and the full-density demo 
 - The point-cloud check (VL-004) allows for the 1 cm rounding wobble of whole-centimetre points. A single point moved by exactly 1 cm is not detected; a move of 2 cm or more is.
 - The loader decides which frame is a teleport by comparing positions. If the first three clean frames of a drive are themselves inconsistent, the loader trusts the most tightly agreeing pair; a drive that starts with several bad frames may be judged wrongly.
 - Motion (Module 3): the motion table is not refreshed by a new ingest. After re-ingesting a drive, run `motion` again; until then the motion table holds the values of the earlier ingest.
+- BI app (Module 4): a re-ingest leaves the old motion table in place until "Recompute motion" is clicked in the Analyze tab (or `motion` is run). The lock that Ingest and Compute motion share is in-process only: it does not cover the command-line `ingest` or `motion`, or a second server process. If the result line of a failed "Recompute motion" click is not drawn when the drive is not ingested ok (for example the lineage changed after the click), the error is not shown; reload the page and check the Clean tab (known issue found in review, not fixed).
 - `VLClient.sql` runs any single SELECT, including `read_parquet` on any file the user can read. It is a local single-user tool; do not expose it to untrusted input (assumption M3-A10).
 - The 16-frame least-squares fit smooths speed changes and the ends of a clip: frames within 8 frames of a change of acceleration, and the first and last 8 frames, carry larger errors (all-frame acceleration max 55.678 cm/s^2 against 4.378 cm/s^2 on interior frames, a development measurement against the in-memory truth of the demo drive, from `tools/motion_sweep.py`; assumption M3-A29).
 - `tools/motion_sweep.py` is a developer measuring tool whose logic is not type-checked by mypy. It compares the estimator with the in-memory truth of generated drives; the product does not.

@@ -768,8 +768,8 @@ Clean, Analyze and SQL. The first three are in the
 design; the SQL tab is a user decision of 2026-10-26, added so a user can ask the lake their own
 question. A sidebar selector, "Drive", picks a drive from the lake, and every tab shows the
 scenario hash of that drive as a badge. The package is `vl_data.bi`. It uses `VLClient` and
-`render_generate_tab` as they are, writes to the lake only through the ingest panel (on a click,
-through `ingest_drive`) and edits no Module 1, 2 or 3 file. Module 4 adds no error codes: the
+`render_generate_tab` as they are, writes to the lake only through the ingest panel and the motion panel (on a click,
+through `ingest_drive` and `compute_motion`) and edits no Module 1, 2 or 3 file. Module 4 adds no error codes: the
 Clean tab shows the existing VL-001 to VL-006 and the drive-level code `INTEGRITY` from
 `docs/ERROR_CODES.md`.
 
@@ -815,16 +815,31 @@ that `streamlit run` starts.
   panel's own overhead on a full-density drive is not measured. The page is blocked while the
   ingest runs, so a large drive can take minutes. The result is kept in session state, the page
   reruns so the sidebar lists the drive, and the result line is drawn once. A drive the ETL
-  rejects is shown as a warning that points to the Clean tab, not as an error. This is the only
-  lake write of the app; the lake has a single writer, so do not run the command line
-  `ingest` at the same time.
-- Analyze: only the stored motion: three charts (centroid x in cm, velocity in cm/s,
-  acceleration in cm/s^2, against time in s), drawn with no click and no raw folder. The
-  centroid x is the raw centroid, not corrected. When the drive has no stored motion the tab
-  shows a message and the exact command: an ingested drive with status ok gets the `motion`
-  command; a drive that is not ingested, or was rejected, gets the `ingest` command; a drive with
-  more than one lineage row gets a problem text and no command (from reading `motion_hint` in
-  `bi/data.py`, not run). The tab never reads ground truth.
+  rejects is shown as a warning that points to the Clean tab, not as an error. This is one of the
+  two lake writes of the app (the other is the motion panel below); the lake has a single
+  writer, so do not run the command line `ingest` at the same time.
+- Analyze: the stored motion: three charts (centroid x in cm, velocity in cm/s, acceleration in
+  cm/s^2, against time in s), drawn with no raw folder. The centroid x is the raw centroid, not
+  corrected. `motion_hint` (in `bi/data.py`) now also returns `can_compute`, true only when the
+  drive has exactly one lineage row with status ok. States: (1) ok drive, no motion: an info
+  "Motion is not computed yet", the button "Compute motion" and the `motion` command as the
+  command-line alternative, no error; (2) ok drive with motion: the charts and the button
+  "Recompute motion"; (3) no motion and not computable: the reason and, when one exists, the
+  `ingest` command (not ingested or rejected), or a problem text with no command (unreadable or
+  more than one lineage row), and no button; (4) motion present but lineage not ok: the charts
+  and a warning that the charts are from an earlier run, and no button. The panel
+  (`bi/motion_panel.py`) runs `compute_motion`, the function the `motion` command calls, inside
+  an `st.status` block; the result (frames read, estimated, null) is kept in session state,
+  the page reruns so the charts appear at once, and the result is drawn once and only for the
+  selected drive. A `MotionError` text (it names the drive, a status and counts, never a path)
+  is shown cut to 200 characters; every other failure is a fixed text. A re-ingest does not
+  remove the old motion table: Recompute is the fix after a re-ingest. The tab never reads
+  ground truth.
+- One lock for lake writes: `bi/lake_lock.py` holds one in-process lock, taken without waiting
+  by both the ingest panel and the motion panel. A second write in the same server process gets
+  a busy text ("Another ingest is running ..." or "Another write to the lake is running ...")
+  and nothing is called. The lock does not cover the command line or a second server process.
+  Each panel keeps its own busy text.
 - SQL: a dropdown of five example queries fills a text box; Run sends the text to
   `VLClient.sql` (it runs the text with DuckDB, an embedded SQL engine), which accepts one SELECT over the views `keypoints`, `quarantine`, `lineage` and
   `motion`. The result table shows at most 10,000 rows and states the total. A non-SELECT, a
@@ -965,7 +980,7 @@ speeds. All data is synthetic.
 
 Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames. The Python SDK (`VLClient`) and SQL read the lake.
 
-Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored centroid position, velocity and acceleration; SQL runs one SELECT over the lake. The app reads the lake. It writes in two places: the Generate tab writes a raw drive, and the ingest panel also writes the lake through `ingest_drive`, on a click.
+Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored centroid position, velocity and acceleration; SQL runs one SELECT over the lake. The app reads the lake. It writes in two places: the Generate tab writes a raw drive, the ingest panel writes the lake through `ingest_drive`, on a click, and the Compute motion button on the Analyze tab writes the motion table through `compute_motion`, on a click.
 
 ### What is in this version
 
@@ -1277,12 +1292,19 @@ With an empty lake the Generate tab has no badge and the other three tabs show a
   drive already in the lake can be ingested again ("re-ingest"). Command line alternative:
   `python -m vl_data ingest '<raw>\<drive>' --lake-dir '<lake>'` (do not run both at once; the
   lake has a single writer, and the in-process lock of the panel does not cover the command line).
-- Analyze: draws only the stored motion: centroid x (cm), velocity (cm/s) and acceleration
-  (cm/s^2) against time (s), from the lake; it needs no click and no raw folder. If the drive was
-  ingested with status ok but has no stored motion, the tab prints
-  `python -m vl_data motion <drive> --lake-dir '<lake>'`. If the drive is not ingested, or was
-  rejected at ingest, it prints the `ingest` command instead. If the drive has more than one
-  lineage row, it shows a problem text and no command (from reading the code, not run).
+- Analyze: draws the stored motion: centroid x (cm), velocity (cm/s) and acceleration (cm/s^2)
+  against time (s), from the lake; it needs no raw folder. If the drive was ingested with status
+  ok but has no stored motion, the tab says "Motion is not computed yet" and shows the button
+  "Compute motion"; command line alternative:
+  `python -m vl_data motion <drive> --lake-dir '<lake>'`. With motion present the tab shows the
+  charts and a button "Recompute motion" (use it after a re-ingest). The result (frames read,
+  estimated, null) shows once after a click. If the drive is not ingested, or was rejected at
+  ingest, there is no button and the tab prints the `ingest` command instead. If the drive was
+  rejected after motion was stored, the charts show with a warning that they are from an
+  earlier run and no button. If the drive has more than one lineage row, it shows a problem
+  text and no command (from reading the code, not run). Do not run the command line `motion`
+  and a panel click at the same time; the panels share one in-process lock that the command line
+  does not take.
 - SQL: a dropdown "Example query" with five examples (Quarantine rows per code; Peak speed
   (cm/s); Kept vs rejected frames; First 20 centroid positions (cm); All drives with status)
   fills the box "SQL (one SELECT only)". Run sends it to `VLClient.sql`, which runs it with DuckDB
@@ -1331,6 +1353,7 @@ covers. The page was not opened in a browser by hand, and the full-density demo 
 - The point-cloud check (VL-004) allows for the 1 cm rounding wobble of whole-centimetre points. A single point moved by exactly 1 cm is not detected; a move of 2 cm or more is.
 - The loader decides which frame is a teleport by comparing positions. If the first three clean frames of a drive are themselves inconsistent, the loader trusts the most tightly agreeing pair; a drive that starts with several bad frames may be judged wrongly.
 - Motion (Module 3): the motion table is not refreshed by a new ingest. After re-ingesting a drive, run `motion` again; until then the motion table holds the values of the earlier ingest.
+- BI app (Module 4): a re-ingest leaves the old motion table in place until "Recompute motion" is clicked in the Analyze tab (or `motion` is run). The lock that Ingest and Compute motion share is in-process only: it does not cover the command-line `ingest` or `motion`, or a second server process. If the result line of a failed "Recompute motion" click is not drawn when the drive is not ingested ok (for example the lineage changed after the click), the error is not shown; reload the page and check the Clean tab (known issue found in review, not fixed).
 - `VLClient.sql` runs any single SELECT, including `read_parquet` on any file the user can read. It is a local single-user tool; do not expose it to untrusted input (assumption M3-A10).
 - The 16-frame least-squares fit smooths speed changes and the ends of a clip: frames within 8 frames of a change of acceleration, and the first and last 8 frames, carry larger errors (all-frame acceleration max 55.678 cm/s^2 against 4.378 cm/s^2 on interior frames, a development measurement against the in-memory truth of the demo drive, from `tools/motion_sweep.py`; assumption M3-A29).
 - `tools/motion_sweep.py` is a developer measuring tool whose logic is not type-checked by mypy. It compares the estimator with the in-memory truth of generated drives; the product does not.

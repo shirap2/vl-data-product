@@ -176,7 +176,7 @@ def test_analyze_shows_the_three_motion_charts_only(clean: BiDrive, bi_config: C
     assert not at.exception
     assert not at.error
     assert _chart_keys(at) == MOTION_KEYS
-    assert not at.button
+    assert [b.label for b in at.button] == ["Recompute motion"]
     assert not at.dataframe
     assert not at.code
 
@@ -197,10 +197,11 @@ def test_analyze_no_motion_shows_command_not_charts(unmotioned: BiDrive, bi_conf
     assert not at.exception
     assert not at.get("plotly_chart")
     command = motion_command(unmotioned.drive_id, _lake_dir(unmotioned))
-    assert [c.value for c in at.code] == [command]
+    assert [c.value for c in at.code] == [command]  # the command-line alternative stays visible
     assert at.code[0].language == "powershell"
-    assert len(at.error) == 1
-    assert "no motion table" in str(at.error[0].value)
+    assert not at.error  # "not computed yet" is not a failure
+    assert [i.value for i in at.info] == ["Motion is not computed yet"]
+    assert [b.label for b in at.button] == ["Compute motion"]
 
 
 def test_analyze_unknown_drive_shows_ingest_command(clean: BiDrive, bi_config: Config) -> None:
@@ -210,6 +211,7 @@ def test_analyze_unknown_drive_shows_ingest_command(clean: BiDrive, bi_config: C
     assert "not ingested" in _text(at.error)
     command = ingest_command(clean.drive_dir.parent, UNKNOWN_DRIVE, _lake_dir(clean))
     assert [c.value for c in at.code] == [command]
+    assert not at.button
 
 
 def test_analyze_rejected_drive_shows_ingest_command_not_motion(
@@ -222,6 +224,7 @@ def test_analyze_rejected_drive_shows_ingest_command_not_motion(
     command = ingest_command(rejected.drive_dir.parent, rejected.drive_id, _lake_dir(rejected))
     assert [c.value for c in at.code] == [command]
     assert " motion " not in command
+    assert not at.button
 
 
 def test_analyze_two_lineage_rows_shows_error_without_command(
@@ -235,6 +238,7 @@ def test_analyze_two_lineage_rows_shows_error_without_command(
     assert len(at.error) == 1
     assert "unexpected lineage rows" in _text(at.error)
     assert not at.code
+    assert not at.button
 
 
 def test_analyze_read_errors_are_messages(clean: BiDrive, bi_config: Config) -> None:
