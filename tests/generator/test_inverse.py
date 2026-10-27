@@ -25,6 +25,7 @@ from vl_data.generator.inverse import (
     short_segments,
 )
 from vl_data.generator.models import MoveSegment, Scenario, StopSegment, load_scenario
+from vl_data.generator.motion import integrate_position, speed_profile
 
 DEMO = Path(__file__).resolve().parents[2] / "src/vl_data/generator/scenarios/demo.yaml"
 DEMO_BOUNDARIES = [32, 128, 288, 352, 480, 576, 656]  # frames, true segment starts after the first
@@ -80,12 +81,13 @@ def _starts(scenario: Scenario, fps: int = 16) -> list[int]:
 def test_infer_track_within_tolerance(demo_drive: Drive, config: Config) -> None:
     """Centroid x error at most 0.6 cm, velocity error at most 17 cm/s."""
     track = infer_track(demo_drive.frames, config)
-    gt_x = demo_drive.ground_truth.column("x_cm").to_numpy()
-    gt_v = demo_drive.ground_truth.column("velocity_cm_s").to_numpy()
+    speed = speed_profile(demo_drive.scenario, config.fps)  # cm/s
+    ref_x = integrate_position(demo_drive.scenario.start.x_cm, speed, config.fps)  # cm
+    ref_v = np.diff(ref_x) * config.fps  # cm/s
     assert len(track.x_cm) == 1000
     assert len(track.velocity_cm_s) == 999
-    assert np.max(np.abs(track.x_cm - gt_x)) <= config.tolerances.position_cm
-    assert np.max(np.abs(track.velocity_cm_s - gt_v[:-1])) <= config.tolerances.velocity_cm_s
+    assert np.max(np.abs(track.x_cm - ref_x)) <= config.tolerances.position_cm
+    assert np.max(np.abs(track.velocity_cm_s - ref_v)) <= config.tolerances.velocity_cm_s
 
 
 def test_infer_track_multi_chunk_equals_single_chunk(demo_drive: Drive, config: Config) -> None:

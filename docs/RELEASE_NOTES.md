@@ -9,7 +9,7 @@ every command and number in it must come from a real run before submission. Item
 
 A small data product for a vehicle-location signal. It generates a mock drive from a start
 position and a motion profile, stores the point cloud, extracts the vehicle's velocity and
-acceleration from the points alone, and shows the result next to the known truth. The vehicle
+acceleration from the points alone. The vehicle
 is a 1 m cube that moves in a straight line, forwards, backwards and stopped, at different
 speeds. All data is synthetic.
 
@@ -17,9 +17,9 @@ speeds. All data is synthetic.
 
 | Part | What it does | Status |
 |---|---|---|
-| Generator | Writes a hashed drive: 16 fps point cloud, ground truth, manifest. Checks itself by recovering the scenario from the data. | Built and tested (Module 1) |
+| Generator | Writes a hashed drive: 16 fps point cloud and manifest. Checks itself by recovering the scenario from the data. | Built and tested (Module 1) |
 | Loader / ETL | Verifies hashes, validates frames with error codes VL-001 to VL-006, keeps 9 keypoints per frame. | Planned |
-| Use-case algorithm | Computes velocity and acceleration and compares them with ground truth. | Planned |
+| Use-case algorithm | Computes velocity and acceleration from the stored centre point. | Planned |
 | BI | One Streamlit app: generate, clean, analyze. | Planned |
 
 ## Install and first check (run on 2026-10-25, Windows PowerShell, Python 3.12.6, fresh clone and new virtual environment)
@@ -71,7 +71,7 @@ manifest: verified
 ```
 
 The folder `data/raw/bf394b9bfb42/` then holds `frames.parquet` (287,134,433 bytes, zstd),
-`ground_truth.parquet` (30,929 bytes) and `manifest.json` (1,454 bytes). The sizes are from the same fresh-clone run (measured). The 1,000-frame drive holds 12 GB
+and `manifest.json` (1,312 bytes). The sizes are from a run on 2026-10-27 (measured); earlier versions also wrote a `ground_truth.parquet` of 30,929 bytes. The 1,000-frame drive holds 12 GB
 (here 12,000,000,000 bytes) of
 points before compression (computed: 1,000 frames x 12,000,000 bytes per frame). `--out` is optional;
 without it the drive goes to `raw_dir` from `config/default.yaml` (or `VL_RAW_DIR`). Generating the same
@@ -85,9 +85,9 @@ Check a drive against its manifest:
 python -m vl_data verify data/raw/bf394b9bfb42
 ```
 
-This prints `manifest: verified` and exits with code 0. After one byte of `ground_truth.parquet`
-was changed in a copy, it printed `changed: ground_truth.parquet (sha256 mismatch)` on stderr and
-exited with code 1 (measured in run 1, which shows the message in its stderr section; the step that changed the copy is recorded only in the run 2 log). A missing scenario file (`generate` and `roundtrip`) or an
+This prints `manifest: verified` and exits with code 0. After one byte of `frames.parquet`
+was changed in a copy of the demo drive (byte 1,000 flipped), it printed
+`changed: frames.parquet (sha256 mismatch)` on stderr and exited with code 1 (measured on 2026-10-27). A missing scenario file (`generate` and `roundtrip`) or an
 invalid one (`generate`) gives a one-line `error: ...` message and exit code 1 (`generator/cli.py` writes it to stderr; the tests mostly check the exit code and the message text, not the stream: tests
 `test_generate_missing_scenario`, `test_generate_invalid_scenario` and
 `test_roundtrip_missing_scenario_exits_1` in `tests/generator/test_cli.py`; not run in the
@@ -112,11 +112,7 @@ round trip OK
 ```
 
 The fresh-clone log records the exit code (0) and these five printed lines. They are the full-density
-figures (2026-10-25). The demo-drive errors against ground truth (maximum centroid x error 0.498 cm,
-maximum velocity error 15.0 cm/s) are a separate, older measurement: 2026-10-24, with
-`.claude/run-proofs/TASK-5-measure.py` (log `TASK-5-measure.log`) on the old 10x10x10 body; they
-were not re-measured at full density.
-
+figures (2026-10-25). 
 The limits are 6 frames, 8 frames and 40 cm/s (`tolerances` in `config/default.yaml`). If a
 check fails, the segment line and one line per problem are printed (problems on stderr according to `generator/cli.py`) and the
 exit code is 1 (test `test_roundtrip_failed_comparison_exits_1` in `tests/generator/test_cli.py`,

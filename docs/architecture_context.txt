@@ -20,16 +20,15 @@ DECISIONS
 - API: Python SDK (VLClient) + SQL. No web service (FastAPI is "coming soon").
   Confirmed by the user on 2026-10-23. VLClient is built in Module 3 and reads through
   core/lake.py, which Module 2 builds.
-- Ground truth is stored outside the warehouse and read only by the evaluation step.
 - Every file is hashed (SHA-256). manifest.json lists the scenario hash and the hash of
   every file. A lineage table links scenario hash -> file hashes -> row counts, so data
-  can be tied to its scenario and checked against ground truth.
+  can be tied to its scenario.
 - Quality: Typer CLI, pytest + hypothesis, ruff, mypy, src layout, Python 3.11,
   Windows PowerShell (python -m ... only).
 
 OVERALL SHAPE
  config/*.yaml -> core/config.py (pydantic)
- [1 GENERATOR] -> data/raw/<hash12>/{frames.parquet, ground_truth.parquet, manifest.json}
+ [1 GENERATOR] -> data/raw/<hash12>/{frames.parquet, manifest.json}
    -> [2 ETL] (verify hashes, validate VL-001..006, reduce to keypoints) -> lake
    -> [3 USE-CASE] (velocity, acceleration from the lake) -> lake
    -> SDK (+SQL) -> [4 BI: one Streamlit app, 3 tabs]
@@ -47,7 +46,7 @@ MODULE 1: DATA GENERATOR
 - Output: full point cloud per frame (1 m cube, 100x100x100 lattice = 1,000,000 points,
   1 cm apart, from 0 to 99 cm, fixed order, int32 cm, 16 fps,
   timestamp_ns = frame_id * 62,500,000),
-  ground_truth.parquet (per-frame x position, velocity, acceleration), manifest.json.
+  and manifest.json.
 - Tech: numpy, pydantic, PyYAML, PyArrow, hashlib, Typer.
 - UI: minimal form in the Streamlit Generate tab (start values, editable segment table,
   preview plot, Generate button). CLI calls the same function.
@@ -110,7 +109,8 @@ DECISIONS LOG (plan-loop for Module 1, 2026-10-23)
 - The project skeleton (pyproject.toml, src layout, tooling, YAML config loader) is part
   of the Module 1 plan.
 - Noise: out of scope.
-- Ground truth: per-frame x position, velocity and acceleration. No event labels.
+- Ground truth: none. The assignment does not ask for it, so the generator writes no ground-truth file
+  and no evaluation exists (decision of 2026-10-26, done in Modules 1 to 4 on 2026-10-27).
 - UI scope for Module 1: the Generate tab only, as a self-contained function with a small
   standalone runner. The three-tab shell is built in Module 4.
 - Approved extra sources: official docs of pydantic, PyYAML, Typer, hypothesis, Python

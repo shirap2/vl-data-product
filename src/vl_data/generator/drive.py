@@ -1,4 +1,4 @@
-"""In-memory drive: frames and ground truth tables. Units: cm, cm/s, cm/s^2, s, ns."""
+"""In-memory drive: the frames table. Units: cm, s, ns."""
 
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -13,13 +13,11 @@ from vl_data.core.schemas import (
     ARROW_BINARY_LIMIT,
     BYTES_PER_POINT,
     FRAMES_SCHEMA,
-    GROUND_TRUTH_SCHEMA,
 )
 from vl_data.generator.body import cube_lattice, place_body
 from vl_data.generator.models import Scenario
 from vl_data.generator.motion import (
     frame_count,
-    ground_truth_arrays,
     integrate_position,
     speed_profile,
 )
@@ -37,12 +35,11 @@ _HASH_DIR_CHARS = 12  # hex characters of the scenario hash used as the folder n
 
 @dataclass(frozen=True)
 class Drive:
-    """A generated drive: the scenario, its hash and the two tables."""
+    """A generated drive: the scenario, its hash and the frames table."""
 
     scenario: Scenario
     scenario_hash: str
     frames: pa.Table  # frame_id, timestamp_ns (ns), points (int32 cm, 12 bytes per point)
-    ground_truth: pa.Table  # x in cm, velocity in cm/s, acceleration in cm/s^2
 
 
 def check_batch_fits(config: Config) -> int:
@@ -75,36 +72,11 @@ def drive_dir_name(scenario_hash: str) -> str:
     return scenario_hash[:_HASH_DIR_CHARS]
 
 
-def _positions(
-    scenario: Scenario, config: Config
-) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    """Return (x in cm, velocity in cm/s, acceleration in cm/s^2), one value per frame."""
+def _x_positions(scenario: Scenario, config: Config) -> NDArray[np.float64]:
+    """Return the x position in cm of the cube at every frame (one value per frame)."""
     fps = config.fps  # frames/s
     speed = speed_profile(scenario, fps)  # cm/s
-    x_cm = integrate_position(scenario.start.x_cm, speed, fps)
-    velocity, acceleration = ground_truth_arrays(x_cm, speed, fps)
-    return x_cm, velocity, acceleration
-
-
-def build_ground_truth(scenario: Scenario, config: Config) -> pa.Table:
-    """Ground truth table (GROUND_TRUTH_SCHEMA) of a scenario; one row per frame, so the
-    frame count is num_rows. Small (about 40 bytes per frame); needs no frames.
-
-    x in cm, velocity in cm/s, acceleration in cm/s^2, timestamps in ns.
-    """
-    x_cm, velocity, acceleration = _positions(scenario, config)
-    frame_ids = np.arange(len(x_cm), dtype=np.int64)
-    timestamps = frame_ids * np.int64(config.frame_interval_ns)  # ns
-    return pa.Table.from_arrays(
-        [
-            pa.array(frame_ids),
-            pa.array(timestamps),
-            pa.array(x_cm),
-            pa.array(velocity),
-            pa.array(acceleration),
-        ],
-        schema=GROUND_TRUTH_SCHEMA,
-    )
+    return integrate_position(scenario.start.x_cm, speed, fps)
 
 
 def iter_frame_batches(scenario: Scenario, config: Config) -> Iterator[pa.RecordBatch]:
@@ -117,7 +89,7 @@ def iter_frame_batches(scenario: Scenario, config: Config) -> Iterator[pa.Record
     is outside the int32 cm range (then after the earlier batches were yielded).
     """
     frame_bytes = check_batch_fits(config)  # bytes
-    x_cm = _positions(scenario, config)[0]
+    x_cm = _x_positions(scenario, config)
     count = len(x_cm)  # frames
     lattice = cube_lattice(config.body.size_cm, config.body.points_per_axis)
     for first in range(0, count, BATCH_FRAMES):
@@ -144,7 +116,7 @@ def iter_frame_batches(scenario: Scenario, config: Config) -> Iterator[pa.Record
 
 
 def generate(scenario: Scenario, config: Config) -> Drive:
-    """Build frames and ground truth for a scenario in memory; no file access.
+    """Build the frames of a scenario in memory; no file access.
 
     Frame k is at timestamp k * config.frame_interval_ns (ns); the cube body is placed at
     the integrated x position (cm) with the scenario's start y and z (cm). The frames come
@@ -157,5 +129,4 @@ def generate(scenario: Scenario, config: Config) -> Drive:
     frame_bytes = check_batch_fits(config)  # bytes
     check_in_memory_size(frame_count(scenario, config.fps), frame_bytes)
     frames = pa.Table.from_batches(list(iter_frame_batches(scenario, config)), schema=FRAMES_SCHEMA)
-    ground_truth = build_ground_truth(scenario, config)
-    return Drive(scenario, compute_scenario_hash(scenario, config.body), frames, ground_truth)
+    return Drive(scenario, compute_scenario_hash(scenario, config.body), frames)

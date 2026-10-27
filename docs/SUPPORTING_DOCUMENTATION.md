@@ -45,7 +45,7 @@ Anything marked "planned" has not been run.
 It is a small end-to-end data product for a vehicle-location signal: a mocked data source, an
 ETL, a queryable warehouse, and a BI view. All data is synthetic. The vehicle is a 1 m cube
 that moves in a straight line along x. The use case is extracting its velocity and
-acceleration from the point cloud alone and showing that the result matches the known truth.
+acceleration from the point cloud alone.
 
 ### Modules
 
@@ -59,7 +59,7 @@ acceleration from the point cloud alone and showing that the result matches the 
 
 | Module | Job | Status |
 |---|---|---|
-| 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud, ground truth, manifest. Check itself in both directions. | Built and tested |
+| 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud and manifest. Check itself in both directions. | Built and tested |
 | 2 Loader / ETL | Verify hashes, validate frames (VL-001 to VL-006), reduce each frame to 9 keypoints, write to the lake. | Contract agreed, plan pending |
 | 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. Evaluate against ground truth. | Outline |
 | 4 BI | One Streamlit app with three tabs: Generate, Clean, Analyze. | Outline |
@@ -100,17 +100,16 @@ tab (`generator/ui/`) is built.
 1. Load and validate the scenario YAML (start values and a list of `move` and `stop` segments).
 2. Hash it: SHA-256 of the canonical JSON of the body (`size_cm`, `points_per_axis`) and the scenario gives the drive hash.
 3. Build the speed for every frame (a straight-line ramp inside each segment), integrate the
-   position, and derive ground-truth velocity and acceleration by differences.
+   position.
 4. Build each frame's points: a 100x100x100 lattice (1,000,000 points) shifted by the rounded position.
-5. Write the frames and ground truth to a temporary folder, build the manifest from the file
-   hashes, swap the folder into place, and verify it.
+5. Write the frames to a temporary folder, build the manifest from the file hash, swap the folder into place, and verify it.
 
 `generate` in `drive.py` does steps 2 to 4 in memory and returns a `Drive` (scenario, hash, frames
-table, ground-truth table) by collecting `iter_frame_batches`, which yields record batches of 50 frames; at full density this is only for small drives. `write_drive` in `writer.py` does step 5 for such a drive. `generate_to_disk` streams the batches straight into the Parquet file (memory near one 600 MB batch), writes the ground truth and manifest, and then runs `verify_drive`; the command line uses `generate_to_disk`.
+table) by collecting `iter_frame_batches`, which yields record batches of 50 frames; at full density this is only for small drives. `write_drive` in `writer.py` does step 5 for such a drive. `generate_to_disk` streams the batches straight into the Parquet file (memory near one 600 MB batch), writes the manifest, and then runs `verify_drive`; the command line uses `generate_to_disk`.
 
 How a drive is written:
 
-- The temporary folder is `.tmp-*` inside the output folder and holds only the two Parquet files
+- The temporary folder is `.tmp-*` inside the output folder and holds only `frames.parquet`
   while the manifest is built. `manifest.json` is written last.
 - Parquet options are fixed so the same scenario gives the same bytes on the same pyarrow version:
   format version 2.6, zstd compression, no dictionary, statistics on, data page version 2.0 and
@@ -119,8 +118,9 @@ How a drive is written:
   is renamed into place, and then the `.old-*` folder is deleted. If the last rename fails, the
   old folder is moved back; if that also fails, the `.old-*` folder is kept (it holds the only
   copy of the old drive). The temporary folder is removed on any error.
-- The frames are never computed from `ground_truth.parquet`. Only manifest hashing and verify
-  read its bytes; the generator itself only writes it.
+- A drive written by an older version may hold a `ground_truth.parquet` listed in its manifest. It
+  still verifies, because the manifest lists every file that is present, and writing the same
+  scenario again replaces the whole folder.
 - Measured on the 1,000-frame demo at 1,000,000 points per frame (a scratch script with the same
   50-frame batching, `.claude/run-proofs/FULL-DENSITY-measure.log`): 75.1 s, peak working set
   2,859 MiB, `frames.parquet` 287,134,433 bytes with zstd (4,024,944,648 bytes with snappy). The
@@ -136,13 +136,11 @@ Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 | Table or file | Layer | Content |
 |---|---|---|
 | `frames.parquet` | raw drive | frame_id, timestamp_ns, points (1,000,000 x 3 int32 = 12,000,000 bytes at the shipped density, one binary column) |
-| `ground_truth.parquet` | raw drive | frame_id, timestamp_ns, x_cm, velocity_cm_s, acceleration_cm_s2 |
 | `manifest.json` | raw drive | schema version 2, drive hash, scenario, body (`size_cm`, `points_per_axis`), fps, counts, SHA-256 and size of each file |
 | keypoints | bronze (planned) | 9 points per frame: 8 cube corners and the centroid |
 | quarantine | bronze (planned) | rejected frames with their error code |
 | lineage | bronze (planned) | scenario hash to file hashes to row counts |
 | motion | silver (planned) | per-frame x, velocity, acceleration |
-| evaluation tables | gold (planned) | errors against ground truth |
 
 The warehouse tables use a generic, use-case-independent shape: a drive and frame key, a
 timestamp, and numeric measures.
@@ -153,7 +151,7 @@ timestamp, and numeric measures.
 |---|---|---|
 | `core/config.py` | `Config` (fps, raw_dir, body, tolerances, fit) and `load_config` | Unknown keys and non-positive values are rejected, and so is a `points_per_axis` above `size_cm` (checked when the config loads; ASSUMPTIONS A65). `fps` must divide 1,000,000,000 ns evenly (16 fps gives 62,500,000 ns). The environment variable `VL_RAW_DIR` overrides `raw_dir`. |
 | `core/hashing.py` | `canonical_json`, `sha256_hex`, `file_sha256`, `scenario_hash` | Keys are sorted, there are no spaces, and a float with a whole value is written as an int, so 600 and 600.0 hash the same. NaN and infinity are rejected. |
-| `core/schemas.py` | `FRAMES_SCHEMA`, `GROUND_TRUTH_SCHEMA`, `encode_points`, `decode_points` | A frame's points are `points_per_frame` x 3 int32 values in cm (1,000,000 at the shipped density), little-endian, row-major, in one binary column. |
+| `core/schemas.py` | `FRAMES_SCHEMA`, `encode_points`, `decode_points` | A frame's points are `points_per_frame` x 3 int32 values in cm (1,000,000 at the shipped density), little-endian, row-major, in one binary column. |
 | `core/manifest.py` | `Manifest`, `FileEntry`, `VerifyResult`, build, write, read, `verify_drive` | The manifest lists every file in the drive folder except itself. `verify_drive` reports changed, missing, extra and invalidly named files and a scenario that no longer matches its hash. A bad manifest, an unreadable file or a scenario that cannot be hashed is a reported problem, not an error. A pathological listed name (hundreds of characters) or a folder that cannot be listed can still raise an OSError. |
 
 #### Motion model (built)
@@ -170,8 +168,6 @@ From a scenario, `motion.py` builds, frame by frame:
 |---|---|
 | Speed | A move of n frames from speed a to speed b gives `a + i * (b - a) / n` at frame i, so the end speed is reached on the first frame of the next segment. A stop gives 0. |
 | Position | Forward Euler along x: `x[0]` is the start, `x[k+1] = x[k] + speed[k] / 16`. |
-| Ground-truth velocity | `(x[k+1] - x[k]) * 16`; the last frame repeats the previous value. |
-| Ground-truth acceleration | `(speed[k+1] - speed[k]) * 16` from the speed profile; the last frame repeats the previous value. |
 | Points | `place_body` returns `rint(lattice + [x, y, z])` as int32 cm. The lattice has 100 x 100 x 100 points on 0, 1, ... 99 cm, x-major, so the 8 corners are at indices 0, 99, 9,900, 9,999, 990,000, 990,099, 999,900, 999,999. |
 
 Real values for the demo scenario (run on 2026-10-24 at 1,000,000 points per frame): 1,000 frames in 8 segments; speeds from
@@ -207,7 +203,7 @@ whole centimetres.
 The generator is tested in both directions. Forward: scenario to frames. Back: `infer_track`
 recovers per-frame position and velocity from the frames, `fit_segments` fits move and stop
 pieces to them, and `compare_scenarios` checks the result against the original within stated
-limits. The back direction reads frames only, never ground truth.
+limits. The back direction reads frames only.
 
 Limits measured on the demo drive, from two different runs, and the limits set in
 `config/default.yaml`.
@@ -266,7 +262,7 @@ prints a `warning:` line on stderr for every segment under 32 frames
 
 `generator/faults.py` builds bad drives on purpose so Module 2 can be tested against known errors.
 `inject_faults(drive, faults, frame_interval_ns=62_500_000)` returns a new `Drive` and a dict of
-counts per error code. Only the frames table changes; the ground truth, the scenario and the
+counts per error code. Only the frames table changes; the scenario and the
 scenario hash are copied unchanged, and the input drive is not modified. A faulty drive can be
 written with `write_drive` and still passes `verify_drive`, because the manifest is built from the
 faulty file.
@@ -367,7 +363,7 @@ every command and number in it must come from a real run before submission. Item
 
 A small data product for a vehicle-location signal. It generates a mock drive from a start
 position and a motion profile, stores the point cloud, extracts the vehicle's velocity and
-acceleration from the points alone, and shows the result next to the known truth. The vehicle
+acceleration from the points alone. The vehicle
 is a 1 m cube that moves in a straight line, forwards, backwards and stopped, at different
 speeds. All data is synthetic.
 
@@ -375,9 +371,9 @@ speeds. All data is synthetic.
 
 | Part | What it does | Status |
 |---|---|---|
-| Generator | Writes a hashed drive: 16 fps point cloud, ground truth, manifest. Checks itself by recovering the scenario from the data. | Built and tested (Module 1) |
+| Generator | Writes a hashed drive: 16 fps point cloud and manifest. Checks itself by recovering the scenario from the data. | Built and tested (Module 1) |
 | Loader / ETL | Verifies hashes, validates frames with error codes VL-001 to VL-006, keeps 9 keypoints per frame. | Planned |
-| Use-case algorithm | Computes velocity and acceleration and compares them with ground truth. | Planned |
+| Use-case algorithm | Computes velocity and acceleration from the stored centre point. | Planned |
 | BI | One Streamlit app: generate, clean, analyze. | Planned |
 
 ### Install and first check (run on 2026-10-25, Windows PowerShell, Python 3.12.6, fresh clone and new virtual environment)
@@ -429,7 +425,7 @@ manifest: verified
 ```
 
 The folder `data/raw/bf394b9bfb42/` then holds `frames.parquet` (287,134,433 bytes, zstd),
-`ground_truth.parquet` (30,929 bytes) and `manifest.json` (1,454 bytes). The sizes are from the same fresh-clone run (measured). The 1,000-frame drive holds 12 GB
+and `manifest.json` (1,312 bytes). The sizes are from a run on 2026-10-27 (measured); earlier versions also wrote a `ground_truth.parquet` of 30,929 bytes. The 1,000-frame drive holds 12 GB
 (here 12,000,000,000 bytes) of
 points before compression (computed: 1,000 frames x 12,000,000 bytes per frame). `--out` is optional;
 without it the drive goes to `raw_dir` from `config/default.yaml` (or `VL_RAW_DIR`). Generating the same
@@ -443,9 +439,9 @@ Check a drive against its manifest:
 python -m vl_data verify data/raw/bf394b9bfb42
 ```
 
-This prints `manifest: verified` and exits with code 0. After one byte of `ground_truth.parquet`
-was changed in a copy, it printed `changed: ground_truth.parquet (sha256 mismatch)` on stderr and
-exited with code 1 (measured in run 1, which shows the message in its stderr section; the step that changed the copy is recorded only in the run 2 log). A missing scenario file (`generate` and `roundtrip`) or an
+This prints `manifest: verified` and exits with code 0. After one byte of `frames.parquet`
+was changed in a copy of the demo drive (byte 1,000 flipped), it printed
+`changed: frames.parquet (sha256 mismatch)` on stderr and exited with code 1 (measured on 2026-10-27). A missing scenario file (`generate` and `roundtrip`) or an
 invalid one (`generate`) gives a one-line `error: ...` message and exit code 1 (`generator/cli.py` writes it to stderr; the tests mostly check the exit code and the message text, not the stream: tests
 `test_generate_missing_scenario`, `test_generate_invalid_scenario` and
 `test_roundtrip_missing_scenario_exits_1` in `tests/generator/test_cli.py`; not run in the
@@ -470,11 +466,7 @@ round trip OK
 ```
 
 The fresh-clone log records the exit code (0) and these five printed lines. They are the full-density
-figures (2026-10-25). The demo-drive errors against ground truth (maximum centroid x error 0.498 cm,
-maximum velocity error 15.0 cm/s) are a separate, older measurement: 2026-10-24, with
-`.claude/run-proofs/TASK-5-measure.py` (log `TASK-5-measure.log`) on the old 10x10x10 body; they
-were not re-measured at full density.
-
+figures (2026-10-25). 
 The limits are 6 frames, 8 frames and 40 cm/s (`tolerances` in `config/default.yaml`). If a
 check fails, the segment line and one line per problem are printed (problems on stderr according to `generator/cli.py`) and the
 exit code is 1 (test `test_roundtrip_failed_comparison_exits_1` in `tests/generator/test_cli.py`,

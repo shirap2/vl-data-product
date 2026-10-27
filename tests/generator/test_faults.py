@@ -144,10 +144,9 @@ def test_faulty_drive_still_verifies(
     assert verify_drive(path).ok
 
 
-def test_ground_truth_and_hash_unchanged(drive: Drive) -> None:
+def test_hash_and_scenario_unchanged(drive: Drive) -> None:
     """Only the frames table changes."""
     new, _ = inject_faults(drive, [DropFrame(FRAME)])
-    assert new.ground_truth is drive.ground_truth
     assert new.scenario_hash == drive.scenario_hash
     assert new.scenario == drive.scenario
 
