@@ -363,7 +363,7 @@ Reported numbers come from the other sessions' documents and were not re-run for
 | Key points kept per frame | 9 | decision | 8 corners and the centre |
 | Speed limit for VL-006 | 9,000 cm/s | decision | a Tesla's top speed, 322 km/h, rounded up (config/etl.yaml) |
 | Demo drive on a small test body | 1,000 of 1,000 frames kept, 9,000 key-point rows | measured | checked by a test, from the Module 2 documents |
-| Ingest of one full-density drive | about 45 to 56 s | reported | from the Module 2 and Module 3 sessions; different runs, not re-measured here |
+| Ingest of one full-density drive | about 45 to 92 s | measured | 45 and 56 s reported by Modules 2 and 3 (25 Oct); 91.5 s in a clean-clone run on 27 Oct; depends on the machine load |
 
 ## Limits of this module
 
@@ -736,7 +736,7 @@ points_per_frame_in: 1000000
 keypoints_per_frame_out: 9
 ```
 
-Measured on 25 Oct 2026: about 44 s per drive on one machine (output shortened here). error-codes --check exits 0 when docs/ERROR_CODES.md matches the rule list.
+Measured: about 44 s per drive on 25 Oct 2026 and 91.5 s in a clean-clone run on 27 Oct 2026, so the time depends on the machine and its load (output shortened here). error-codes --check exits 0 when docs/ERROR_CODES.md matches the rule list.
 
 **Compute velocity and acceleration**
 
