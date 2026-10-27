@@ -16,7 +16,7 @@ speeds. All data is synthetic.
 
 Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames. The Python SDK (`VLClient`) and SQL read the lake.
 
-Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored centroid position, velocity and acceleration; SQL runs one SELECT over the lake. Apart from the Generate tab, which writes a drive, it only reads the lake.
+Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored centroid position, velocity and acceleration; SQL runs one SELECT over the lake. The app reads the lake. It writes in two places: the Generate tab writes a raw drive, and the ingest panel also writes the lake through `ingest_drive`, on a click.
 
 ## What is in this version
 
@@ -187,7 +187,7 @@ before the writer, so with a full disk the user sees the disk error first. Two G
 at the same time for a drive that does not exist yet can still both write (the race is not closed, A79). The tab is tested with Streamlit's test runner
 (`tests/generator/test_ui.py`, 49 tests, 48 passed and 1 skipped, in 10.35 s, measured in
 `.claude/run-proofs/TASK-7-1-1-iter1-ui-tests.log`; the one skip is the real-symlink test, which needs the Windows symbolic-link right
-and has a no-rights stand-in that ran; on the Generator branch at that time the whole suite was 332 tests, 331 passed and 1 skipped, 100.00% coverage, measured in `TASK-7-1-1-iter1-suite.log`, and its fresh-clone run on 2026-10-25 gave 331 passed, 1 skipped in 32.41 s, 100% coverage of 1,037 statements, with ruff and mypy clean (measured, `FINAL-DOCS-iter1-fresh-clone.log`). On the Loader branch after `main` was merged in (2026-10-27, measured, output not saved to `.claude/run-proofs/`), the whole suite gave 898 passed and 4 skipped in 110 s, with 282 of the tests in `tests/etl` and 99% line coverage of the package. The logs are local, git-ignored, A28), which cannot edit the table, so editing a row
+and has a no-rights stand-in that ran; on the Generator branch at that time the whole suite was 332 tests, 331 passed and 1 skipped, 100.00% coverage, measured in `TASK-7-1-1-iter1-suite.log`, and its fresh-clone run on 2026-10-25 gave 331 passed, 1 skipped in 32.41 s, 100% coverage of 1,037 statements, with ruff and mypy clean (measured, `FINAL-DOCS-iter1-fresh-clone.log`). On the Loader branch after `main` was merged in (2026-10-27, measured, output not saved to `.claude/run-proofs/`), the whole suite gave 939 passed and 5 skipped in 128 s, with 282 of the tests in `tests/etl` and 99% line coverage of the package. The logs are local, git-ignored, A28), which cannot edit the table, so editing a row
 by hand is not covered by a test.
 
 Load the drive into the lake:
@@ -310,14 +310,24 @@ The page has four tabs: Generate, Clean, Analyze and SQL. The sidebar selector "
 drives in the lake. Each tab shows a badge "scenario hash: <first 12 hex>" for the selected drive
 and a caption with all 64 characters. (On the Generate tab the badge is labelled "selected
 drive" and shows the hash of the drive chosen in the sidebar, not the scenario in the form.)
-With an empty lake the Generate tab has no badge and the other three tabs show a hint.
+With an empty lake the Generate tab has no badge and the other three tabs show a hint; the ingest panel shows under Generate and in Clean.
 
-- Clean (read-only): the metrics "expected (frames)", "in (frames)", "kept (frames)", "rejected
+- Clean (reads the lake): the metrics "expected (frames)", "in (frames)", "kept (frames)", "rejected
   (frames)", "missing (frames)" and "keypoint rows (rows)"; a bar chart of the frame counts; a bar
   chart of quarantine rows per error code; and the quarantine table, which shows at most 200 rows
   and states the full count ("showing N of M quarantine rows"). If the drive is not ingested the
   tab prints the command to run, for example
   `python -m vl_data ingest '<raw>\<drive>' --lake-dir '<lake>'`, and does not run it.
+- Ingest (Generate tab and Clean tab): choose a raw drive folder and click "Ingest this drive".
+  One click ingests one drive; the sidebar then lists it. The panel calls the same
+  `ingest_drive` as the command, so the `ingest_drive` figures (in-process, not the command-line run) are its ingest cost
+  (full-density drive: 44.7 s first ingest, 43.6 s re-ingest, measured 2026-10-25 on one machine, plus one
+  unexplained 3,730 s outlier); the panel's own overhead on a full-density drive is not measured.
+  The page is blocked while it runs, so a large drive can take minutes. The check script
+  `.claude/run-proofs/module4_ingest_check.py` prints the seconds of a small drive. A
+  drive already in the lake can be ingested again ("re-ingest"). Command line alternative:
+  `python -m vl_data ingest '<raw>\<drive>' --lake-dir '<lake>'` (do not run both at once; the
+  lake has a single writer, and the in-process lock of the panel does not cover the command line).
 - Analyze: draws only the stored motion: centroid x (cm), velocity (cm/s) and acceleration
   (cm/s^2) against time (s), from the lake; it needs no click and no raw folder. If the drive was
   ingested with status ok but has no stored motion, the tab prints
@@ -339,7 +349,7 @@ endpoint answered `ok`, the page answered HTTP 200, the server's own run of `app
 printed `SERVER_CHECK: PASS`, 8.4 s in all, measured on 2026-10-26 with a Python timer; log
 `.claude/run-proofs/M4RM-server.log`, local, git-ignored). After the evaluation was removed, the
 100 tests in `tests/bi` passed with 100% statement coverage of `vl_data.bi` (319 statements, 0
-missed), and the full suite gave 958 passed, 4 skipped (all measured, 2026-10-26). The server check
+missed), and the full suite gave 958 passed, 4 skipped (all measured, 2026-10-26). With the ingest panel, on 2026-10-27 `tests/bi` gave 141 passed, 1 skipped with 100% coverage of `vl_data.bi` (439 statements; measured; log `.claude/run-proofs/M4-INGEST-final-tests-bi.log`, local and git-ignored). The server check
 proves the app starts and is served; it cannot click a widget, which is what the test runner
 covers. The page was not opened in a browser by hand, and the full-density demo drive was not loaded in the app.
 
