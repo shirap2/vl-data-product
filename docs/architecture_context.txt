@@ -78,21 +78,15 @@ MODULE 3: USE-CASE ALGORITHM
   A missing frame needs no special case; a window with too few points or a gap above
   max_gap_frames gives null, never zero.
 - Settings in config/motion.yaml (MotionConfig): window_frames, poly_order, min_points,
-  max_gap_frames, position_keypoint (centroid) and the evaluation tolerances. The values
+  max_gap_frames and position_keypoint (centroid). The values
   were MEASURED by tools/motion_sweep.py, not guessed (window 16, order 2, see
   docs/ARCHITECTURE.md for the table).
 - Output: motion table in the lake, partitioned by drive: frame_id, timestamp_ns, x_cm (the
   raw centroid x), velocity_cm_s and acceleration_cm_s2 (nullable), n_points (samples in the
   window). compute_motion refuses a drive without exactly one lineage row, with a status other
   than ok, without centroid rows, or with bad timestamps or positions, and writes nothing then.
-- Evaluation (usecase/evaluate.py, the ONLY code that opens ground truth): verifies the drive
-  files, checks the lineage hashes against the manifest, then compares motion with ground
-  truth by frame_id. Errors (max and RMS) for position, velocity and acceleration are reported
-  on interior frames (no change of true acceleration inside the window) and on all frames;
-  pass or fail gates the interior frames. The report also carries a per-frame table
-  (estimated and true position, velocity, acceleration) so the Analyze tab can plot them. It
-  is returned and printed, never stored in the lake.
-- Commands: python -m vl_data motion <drive_id>, python -m vl_data evaluate <drive_dir>.
+- Command: python -m vl_data motion <drive_id>. There is no evaluation command (see the
+  2026-10-26 decision below).
 
 MODULE 4: BI
 - One Streamlit + Plotly app, three tabs: Generate, Clean (quality by error code, kept vs
@@ -194,13 +188,19 @@ DECISIONS LOG (plan-loop for Module 3, 2026-10-24 and 2026-10-25)
 - Estimator: sliding-window least squares on real timestamps (user decision). Window and
   order come from a measurement (tools/motion_sweep.py), then YAML. Selection rule: lowest
   worst-case interior acceleration error among cells that keep at least 80% of frames
-  interior (a judgement, documented). Tolerances = 1.5 x the largest measured interior
-  error, rounded up to 0.1 (sweep drives plus a seeded random-scenario search).
+  interior (a judgement, documented). The sweep also measures a seeded random-scenario
+  search; its numbers are development measurements, not limits (see 2026-10-26 below).
 - Missing frames: fit on timestamps; assumptions recorded in docs/ASSUMPTIONS.md.
 - motion table: Module 3 adds the schema (agreed with the Module 2 session). x_cm holds the
   raw centroid x. n_points is kept. NaN is stored as null.
-- Ground truth is a forward difference while the fit is centred (bias about a/32): compared
-  directly, documented and covered by the measured tolerances.
+- The true motion that the sweep compares with is a forward difference while the fit is
+  centred (bias about a/32): compared directly and documented (M3-A17).
+- 2026-10-26, user decision: ground truth and an evaluation against it are not part of the
+  assignment. Module 3 removed usecase/evaluate.py, the evaluate command, the tolerances in
+  config/motion.yaml and the EvaluationError text. tools/motion_sweep.py stays as a developer
+  tool that computes the true motion from the scenario itself (true_motion); the accuracy
+  numbers in the docs are labelled development measurements; the estimator regression bounds
+  (19.4 cm/s, 31.9 cm/s^2) live in tests/usecase/test_estimator.py.
 - VLClient returns Arrow tables; sql allows exactly one SELECT; each query closes its
   connection. Known issue: a SELECT can still read any file via read_parquet (accepted).
 - Evaluation result: returned and printed only, not stored. It carries a per-frame table for
@@ -213,8 +213,8 @@ DECISIONS LOG (plan-loop for Module 3, 2026-10-24 and 2026-10-25)
 
 STILL OPEN
 - Nothing open for Module 1. (The API choice was confirmed on 2026-10-23, see DECISIONS.)
-- Module 3 (as of 2026-10-25): built (estimator, client, motion table, evaluation, sweep,
-  motion and evaluate commands, end-to-end run on the demo drive). Project-wide still to do:
+- Module 3 (as of 2026-10-25): built (estimator, client, motion table, sweep,
+  motion command, end-to-end run on the demo drive; evaluation removed on 2026-10-26). Project-wide still to do:
   Module 4 (BI), regenerate docs/LLM_USAGE.md and make it tracked, and the final pass.
 
 OTHER SESSIONS
@@ -228,7 +228,8 @@ LLM USAGE TRACKING
 
 NEXT STEPS (2026-10-25)
 1. Modules 1 and 2 are built (Module 1 Generate tab and Module 2 ingest CLI committed).
-2. Module 3: finish the motion and evaluate commands, the end-to-end proof and the docs.
+2. Module 3: the motion command, the end-to-end proof and the docs (done; the evaluation
+   was removed on 2026-10-26).
 3. Module 4: the Streamlit app (Clean and Analyze tabs); Analyze uses the per-frame table
    returned by evaluate_drive.
 4. Final pass before 2026-10-30: run every documented command from a fresh clone, regenerate

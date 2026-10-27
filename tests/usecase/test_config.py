@@ -22,7 +22,6 @@ def _valid() -> dict[str, Any]:
         "min_points": 5,
         "max_gap_frames": 4,
         "position_keypoint": "centroid",
-        "tolerances": {"velocity_cm_s": 20.0, "acceleration_cm_s2": 60.0},
     }
 
 
@@ -47,15 +46,12 @@ def test_default_yaml_loads() -> None:
         "min_points",
         "max_gap_frames",
         "position_keypoint",
-        "tolerances",
     }
     assert config.window_frames == raw["window_frames"]
     assert config.poly_order == raw["poly_order"]
     assert config.min_points == raw["min_points"]
     assert config.max_gap_frames == raw["max_gap_frames"]
     assert config.position_keypoint == raw["position_keypoint"]
-    assert config.tolerances.velocity_cm_s == raw["tolerances"]["velocity_cm_s"]
-    assert config.tolerances.acceleration_cm_s2 == raw["tolerances"]["acceleration_cm_s2"]
 
 
 @pytest.mark.parametrize(
@@ -77,16 +73,9 @@ def test_default_yaml_loads() -> None:
         _with(window_frames=True),
         _with(min_points=True),
         _with(max_gap_frames=True),
-        _with(tolerances={"velocity_cm_s": -1.0, "acceleration_cm_s2": 60.0}),
-        _with(tolerances={"velocity_cm_s": 0.0, "acceleration_cm_s2": 60.0}),
-        _with(tolerances={"velocity_cm_s": float("nan"), "acceleration_cm_s2": 60.0}),
-        _with(tolerances={"velocity_cm_s": float("inf"), "acceleration_cm_s2": 60.0}),
-        _with(tolerances={"velocity_cm_s": 20.0, "acceleration_cm_s2": -5.0}),
-        _with(tolerances={"velocity_cm_s": 20.0, "acceleration_cm_s2": 0.0}),
-        _with(tolerances={"velocity_cm_s": 20.0, "acceleration_cm_s2": float("nan")}),
         _with(position_keypoint=""),
         {**_valid(), "extra": 1},
-        _with(tolerances={"velocity_cm_s": 20.0, "acceleration_cm_s2": 60.0, "extra": 1}),
+        {**_valid(), "tolerances": {"velocity_cm_s": 20.0, "acceleration_cm_s2": 60.0}},  # removed
     ],
 )
 def test_invalid_values_rejected(data: dict[str, Any]) -> None:

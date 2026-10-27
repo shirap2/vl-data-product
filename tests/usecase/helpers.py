@@ -1,4 +1,4 @@
-"""Helpers shared by the evaluation tests. Units: cm, cm/s, cm/s^2, frames, s."""
+"""Helpers shared by the use-case tests. Units: cm, cm/s, cm/s^2, frames, s."""
 
 import importlib.util
 import sys

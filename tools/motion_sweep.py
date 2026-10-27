@@ -7,12 +7,14 @@ Run from the repo root (the package must be importable, for example PYTHONPATH=s
 What it does. It generates, in memory, two drives with a 100 cm cube of 10 points per axis:
 the demo scenario (1000 frames) and a harder drive (stop, forward ramp, reversal, stop; 624
 frames). Per frame it takes the centroid x (mean of the points' x, cm) and the true velocity
-(cm/s) and acceleration (cm/s^2) from the in-memory ground truth; it never reads a file or the
-lake. It runs estimate_motion for every window length (frames) and polynomial order, and also a
-per-frame-difference baseline (central differences of the centroid x). Errors are estimate minus
-truth, as maximum absolute and RMS (vl_data.usecase.evaluate.max_abs_rms), over interior frames
-(vl_data.usecase.evaluate.interior_mask, the definition evaluate_drive uses, with half a window
-each side) and over all frames that have an estimate.
+(cm/s) and acceleration (cm/s^2) that it computes from the scenario itself (true_motion: the
+speed profile, forward-Euler position and forward differences, as the generator defines them);
+it never reads a file or the lake. This is a developer measurement against that in-memory
+truth, not part of the shipped pipeline. It runs estimate_motion for every window length
+(frames) and polynomial order, and also a per-frame-difference baseline (central differences of
+the centroid x). Errors are estimate minus truth, as maximum absolute and RMS (max_abs_rms),
+over interior frames (interior_mask: no change of true acceleration within half a window each
+side) and over all frames that have an estimate.
 
 Derived settings. min_points = default_min_points(window) = window // 2 + 1, so the one-sided
 window at the first and last frame (half a window plus the frame itself) still fits.
@@ -36,17 +38,18 @@ up to 5 legs, 10 points per axis), plus the PINNED_LEGS scenarios, which are alw
 (the counterexamples that the Hypothesis test found). The same leg rules build the scenarios of
 the property test in tests/usecase/test_estimator.py (scenario_from_legs).
 
-Tolerances. The velocity (cm/s) and acceleration (cm/s^2) tolerances are the largest measured
-interior max error of the chosen cell over the sweep drives and the random-scenario search,
-times 1.5, rounded up to 1 decimal (never below the measured value, always above zero).
---write-yaml updates only the window, order, min_points and tolerance fields of
-config/motion.yaml, atomically, and rewrites the header note.
+Measured errors. The tool prints the largest interior max error (velocity cm/s, acceleration
+cm/s^2) of the chosen cell over the sweep drives and over the random-scenario search. They are
+measurements, not limits: nothing in the pipeline compares a drive with them.
+--write-yaml updates only the window, order and min_points fields of config/motion.yaml,
+atomically, and rewrites the header note.
 
 --full-density-check N (at most 600) generates N frames at the real density (100 points per
 axis) to a temp folder with generate_to_disk, ingests them into a temp lake, runs
-compute_motion and evaluate_drive, prints the interior errors beside the small-lattice errors of
-the same scenario, and deletes the temp folders. It refuses to start when the free disk space is
-under twice the estimated size (12 bytes per point, uncompressed).
+compute_motion, compares the stored motion table with the in-memory truth, prints the interior
+errors beside the small-lattice errors of the same scenario, and deletes the temp folders. It
+refuses to start when the free disk space is under twice the estimated size (12 bytes per
+point, uncompressed).
 
 Units: positions cm, velocity cm/s, acceleration cm/s^2, windows and gaps in frames, time s.
 """
@@ -78,32 +81,23 @@ from vl_data.etl.config import EtlConfig
 from vl_data.etl.ingest import ingest_drive
 from vl_data.generator.drive import generate
 from vl_data.generator.models import Scenario, load_scenario
+from vl_data.generator.motion import integrate_position, speed_profile
 from vl_data.generator.writer import generate_to_disk
 from vl_data.sdk.client import VLClient
 from vl_data.usecase.config import DEFAULT_MOTION_CONFIG_PATH, MotionConfig, load_motion_config
 from vl_data.usecase.estimator import estimate_motion
-from vl_data.usecase.evaluate import (
-    EvalReport,
-    MetricErrors,
-    evaluate_drive,
-    interior_mask,
-    max_abs_rms,
-)
 from vl_data.usecase.pipeline import compute_motion
-
-ErrorStats = MetricErrors  # max_abs and rms, in the metric's unit (cm/s or cm/s^2)
 
 DEFAULT_WINDOWS = (8, 12, 16, 24, 32, 48)  # frames
 DEFAULT_ORDERS = (2, 3)  # polynomial order
 DEFAULT_MAX_GAP_FRAMES = MotionConfig().max_gap_frames  # frame intervals
-TOLERANCE_MARGIN = 1.5  # factor on the measured worst-case interior max error
-MIN_TOLERANCE = 0.1  # the smallest tolerance written (cm/s or cm/s^2); a tolerance must be > 0
 MIN_INTERIOR_FRACTION = 0.8  # share of frames of every sweep drive that must be interior
 DEFAULT_RANDOM_SEARCH = 1500  # random scenarios per run
 DEFAULT_SEED = 0
 MAX_FULL_DENSITY_FRAMES = 600  # frames; 600 x 12 MB = 7.2 GB uncompressed
 BASELINE_LABEL = "per-frame differences"
 _TIE_DIGITS = 6  # decimals; errors closer than this are tied in choose_default
+_ACC_CHANGE_REL = 1e-9  # relative to max(1, largest true |acceleration|); smaller is no change
 _BASELINE_HALF_WINDOW = 1.0  # frames; a central difference looks one frame either side
 _DEMO_YAML = Path(_generator_package.__file__).resolve().parent / "scenarios" / "demo.yaml"
 _SWEEP_BODY = BodyConfig(size_cm=100, points_per_axis=10)
@@ -124,6 +118,72 @@ PINNED_LEGS: tuple[tuple[Leg, ...], ...] = (
 
 
 @dataclass(frozen=True)
+class ErrorStats:
+    """Error of one metric: largest absolute error and RMS error, in the metric's unit.
+
+    The unit is that of the metric (cm, cm/s or cm/s^2). Both are NaN when no frame has both
+    an estimate and a true value.
+    """
+
+    max_abs: float  # in the metric's unit (cm, cm/s or cm/s^2)
+    rms: float  # in the metric's unit
+
+
+def max_abs_rms(estimate: NDArray[np.float64], truth: NDArray[np.float64]) -> ErrorStats:
+    """Max and RMS of estimate minus truth, in the unit of the inputs (cm, cm/s or cm/s^2).
+
+    NaN for both when there are no frames.
+    """
+    if estimate.size == 0:
+        return ErrorStats(float("nan"), float("nan"))
+    diff = estimate - truth
+    return ErrorStats(float(np.max(np.abs(diff))), float(np.sqrt(np.mean(diff**2))))
+
+
+def interior_mask(
+    truth_acceleration: NDArray[np.float64], half_window_frames: float
+) -> NDArray[np.bool_]:
+    """Interior frames of a drive whose frame ids are 0, 1, 2, ... (in frame order).
+
+    truth_acceleration: true acceleration in cm/s^2, one value per frame. half_window_frames:
+    half the window length, in frames. A frame is interior when the true acceleration does not
+    change within half_window_frames frames of it. A change at frame k is a difference from the
+    previous frame of more than 1e-9 * max(1, largest |acceleration|) cm/s^2. The last frame is
+    never interior (the truth repeats the previous acceleration there).
+    """
+    ids = np.arange(truth_acceleration.size, dtype=np.int64)
+    threshold = _ACC_CHANGE_REL * max(1.0, float(np.max(np.abs(truth_acceleration))))  # cm/s^2
+    changed = np.abs(np.diff(truth_acceleration)) > threshold
+    interior = np.ones(ids.size, dtype=bool)
+    for k in ids[1:][changed]:
+        interior &= np.abs(ids - k) > half_window_frames
+    interior &= ids != ids[-1]
+    return interior
+
+
+def true_motion(
+    scenario: Scenario, fps: int
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """The scenario's true (x in cm, velocity in cm/s, acceleration in cm/s^2), one per frame.
+
+    Position is the forward-Euler integral of the speed profile; velocity[k] = (x[k+1] - x[k]) *
+    fps and acceleration[k] = (speed[k+1] - speed[k]) * fps; the last frame repeats the previous
+    value. One frame: velocity = speed, acceleration 0. fps is in frames/s.
+    """
+    speed = speed_profile(scenario, fps)  # cm/s
+    x_cm = integrate_position(scenario.start.x_cm, speed, fps)
+    if x_cm.size == 1:
+        return x_cm, np.array([speed[0]], dtype=np.float64), np.array([0.0])
+    velocity = np.diff(x_cm) * fps
+    acceleration = np.diff(speed) * fps
+    return (
+        x_cm,
+        np.concatenate((velocity, velocity[-1:])),
+        np.concatenate((acceleration, acceleration[-1:])),
+    )
+
+
+@dataclass(frozen=True)
 class SweepDrive:
     """One generated drive with its centroid x and true motion, one value per frame."""
 
@@ -131,7 +191,7 @@ class SweepDrive:
     fps: int  # frames/s
     t_s: NDArray[np.float64]  # s, from the first frame
     centroid_x_cm: NDArray[np.float64]  # cm, mean x of the frame's points
-    true_x_cm: NDArray[np.float64]  # cm, ground-truth position of the body origin
+    true_x_cm: NDArray[np.float64]  # cm, true position of the body origin
     true_velocity_cm_s: NDArray[np.float64]  # cm/s
     true_acceleration_cm_s2: NDArray[np.float64]  # cm/s^2
 
@@ -193,11 +253,22 @@ class RandomSearchResult:
 
 
 @dataclass(frozen=True)
+class FullDensityErrors:
+    """Errors of the stored motion table of the full-density drive against the in-memory truth."""
+
+    frames_interior: int  # frames
+    frames_null: int  # frames whose velocity or acceleration is null
+    position_cm: ErrorStats  # cm, interior frames
+    velocity_cm_s: ErrorStats  # cm/s, interior frames with an estimate
+    acceleration_cm_s2: ErrorStats  # cm/s^2, interior frames with an estimate
+
+
+@dataclass(frozen=True)
 class FullDensityResult:
     """Outcome of the full-density confirmation."""
 
     frames: int  # frames
-    report: EvalReport  # evaluation of the full-density drive
+    report: FullDensityErrors  # stored motion of the full-density drive against the truth
     small_errors: DriveErrors  # same scenario, 10 points per axis, same estimator
     max_centroid_difference_cm: float  # cm, largest |stored full centroid x - small centroid x|
 
@@ -219,22 +290,22 @@ def centroid_x_cm(frames: pa.Table) -> NDArray[np.float64]:
 
 
 def drive_from_scenario(name: str, scenario: Scenario, config: Config) -> SweepDrive:
-    """Generate a drive in memory and keep its centroid x (cm) and in-memory ground truth.
+    """Generate a drive in memory and keep its centroid x (cm) and the scenario's true motion.
 
     Positions are in cm, velocities in cm/s, accelerations in cm/s^2, times in s at
     config.fps frames/s. config.body must be small enough for generate() (at most 1 GiB).
     """
     drive = generate(scenario, config)
-    truth = drive.ground_truth
+    true_x, true_velocity, true_acceleration = true_motion(scenario, config.fps)
     ts = drive.frames.column("timestamp_ns").to_numpy()  # ns
     return SweepDrive(
         name=name,
         fps=config.fps,
         t_s=(ts - ts[0]) / NS_PER_SECOND,
         centroid_x_cm=centroid_x_cm(drive.frames),
-        true_x_cm=truth.column("x_cm").to_numpy(),
-        true_velocity_cm_s=truth.column("velocity_cm_s").to_numpy(),
-        true_acceleration_cm_s2=truth.column("acceleration_cm_s2").to_numpy(),
+        true_x_cm=true_x,
+        true_velocity_cm_s=true_velocity,
+        true_acceleration_cm_s2=true_acceleration,
     )
 
 
@@ -471,16 +542,6 @@ def random_search(
     return RandomSearchResult(len(all_legs), seed, worst_v, worst_a, legs_v, legs_a)
 
 
-def tolerance_from_measured(measured: float) -> float:
-    """measured * 1.5 rounded up to 1 decimal, at least 0.1; never below measured (same unit).
-
-    Raises ValueError if measured is negative or not finite.
-    """
-    if not math.isfinite(measured) or measured < 0:
-        raise ValueError(f"measured error must be a finite number >= 0, got {measured}")
-    return max(MIN_TOLERANCE, math.ceil(round(measured * TOLERANCE_MARGIN * 10, 6)) / 10)
-
-
 def _fmt(value: float, width: int = 8) -> str:
     return f"{value:{width}.3f}"
 
@@ -535,31 +596,20 @@ def format_table(rows: Sequence[SweepRow]) -> str:
     return "\n".join(lines)
 
 
-_TOP_FIELDS = ("window_frames", "poly_order", "min_points")
-_TOLERANCE_FIELDS = ("velocity_cm_s", "acceleration_cm_s2")
 _HEADER_WIDTH = 100  # characters per line of the generated header comment
 _LINE = re.compile(r"^(\s*)(\w+):(\s*)([^\s#]+)(.*)$")
 
 
-def write_yaml(
-    path: Path,
-    row: SweepRow,
-    velocity_tol: float,
-    acceleration_tol: float,
-    stamp: str,
-    basis: str = "",
-) -> None:
-    """Update window_frames (frames), poly_order, min_points (frames) and the two tolerances
-    (velocity_cm_s in cm/s, acceleration_cm_s2 in cm/s^2) in a motion YAML.
+def write_yaml(path: Path, row: SweepRow, stamp: str, basis: str = "") -> None:
+    """Update window_frames (frames), poly_order and min_points (frames) in a motion YAML.
 
-    Other lines, the file's line endings and every field comment stay as they are. The
-    tolerance keys are replaced only inside the `tolerances:` block. Any '# PROVISIONAL' line
-    and any earlier '# Measured by' note are removed and a new note (stamp is a date string;
-    basis names the random-scenario search that fed the tolerances) is written after the first
-    line, wrapped at 100 characters. The rewritten text is parsed and checked (only the five
-    fields differ) and then written to a temp file in the same folder and moved over the
-    original with os.replace, so a failure leaves the original unchanged. Raises ValueError for
-    the baseline row, a missing field or a failed check.
+    Other lines, the file's line endings and every field comment stay as they are. Any
+    '# PROVISIONAL' line and any earlier '# Measured by' note are removed and a new note (stamp
+    is a date string; basis names the random-scenario search measured beside the sweep drives)
+    is written after the first line, wrapped at 100 characters. The rewritten text is parsed
+    and checked (only the three fields differ) and then written to a temp file in the same
+    folder and moved over the original with os.replace, so a failure leaves the original
+    unchanged. Raises ValueError for the baseline row, a missing field or a failed check.
     """
     if row.window_frames is None or row.poly_order is None:
         raise ValueError("the baseline row has no window or order to write")
@@ -567,10 +617,6 @@ def write_yaml(
         "window_frames": str(row.window_frames),
         "poly_order": str(row.poly_order),
         "min_points": str(default_min_points(row.window_frames)),
-    }
-    tolerances = {
-        "velocity_cm_s": repr(float(velocity_tol)),
-        "acceleration_cm_s2": repr(float(acceleration_tol)),
     }
     with open(path, encoding="utf-8", newline="") as handle:
         original = handle.read()
@@ -589,41 +635,28 @@ def write_yaml(
         skipping_note = False
         kept.append(line)
     note = textwrap.wrap(
-        f"Measured by tools/motion_sweep.py on {stamp}. Window and order: lowest worst-case "
-        "interior acceleration error over the sweep drives (demo, hard). Tolerances: 1.5 x the "
-        "largest measured interior max error over the sweep drives and "
-        f"{basis or 'no extra search'}, rounded up to 0.1.",
+        f"Measured by tools/motion_sweep.py on {stamp}, against the in-memory truth of generated "
+        "drives (a developer measurement). Window and order: lowest worst-case interior "
+        "acceleration error over the sweep drives (demo, hard); also measured on "
+        f"{basis or 'no extra search'}.",
         width=_HEADER_WIDTH,
         initial_indent="# ",
         subsequent_indent="#   ",
     )
     kept[1 if kept else 0 : 1 if kept else 0] = note
-    remaining = {*top, *tolerances}
-    section = ""
+    remaining = set(top)
     for index, line in enumerate(kept):
-        top_level = re.match(r"^(\w+):", line)
-        if top_level:
-            section = top_level.group(1)
         match = _LINE.match(line)
-        if not match:
-            continue
-        indent, key = match.group(1), match.group(2)
-        if indent == "":
-            if key in top:
-                kept[index] = f"{key}:{match.group(3)}{top[key]}{match.group(5)}"
-                remaining.discard(key)
-        elif section == "tolerances" and key in tolerances:
-            kept[index] = f"{indent}{key}:{match.group(3)}{tolerances[key]}{match.group(5)}"
+        if match and match.group(1) == "" and match.group(2) in top:
+            key = match.group(2)
+            kept[index] = f"{key}:{match.group(3)}{top[key]}{match.group(5)}"
             remaining.discard(key)
     if remaining:
         raise ValueError(f"fields not found in {path.name}: {sorted(remaining)}")
     text = newline.join(kept) + newline
     expected: Any = yaml.safe_load(original) or {}
-    expected = {**expected, "tolerances": dict(expected.get("tolerances", {}))}
     for key, value in top.items():
         expected[key] = int(value)
-    for key, value in tolerances.items():
-        expected["tolerances"][key] = float(value)
     if yaml.safe_load(text) != expected:
         raise ValueError(f"rewritten {path.name} differs from the original in other fields")
     handle_fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
@@ -659,13 +692,45 @@ def estimated_bytes(frames: int, config: Config) -> int:
     return frames * config.body.points_per_axis**3 * BYTES_PER_POINT
 
 
+def compare_stored_motion(
+    motion: pa.Table, scenario: Scenario, config: Config, cfg: MotionConfig
+) -> FullDensityErrors:
+    """Compare a stored motion table (x_cm, velocity_cm_s, acceleration_cm_s2) with the truth.
+
+    motion: the drive's motion table, one row per frame, ordered by frame_id; x_cm is the
+    centroid, (body size - 1) / 2 cm above the body origin. Interior frames use half of
+    cfg.window_frames either side. Errors: position cm, velocity cm/s, acceleration cm/s^2.
+    """
+    true_x, true_v, true_a = true_motion(scenario, config.fps)
+    offset_cm = (config.body.size_cm - 1) / 2  # cm
+    x_est = motion.column("x_cm").to_numpy() - offset_cm
+
+    def stored(name: str) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+        column = motion.column(name)
+        values = column.fill_null(np.nan).to_numpy()
+        return values, column.is_valid().to_numpy(zero_copy_only=False) & np.isfinite(values)
+
+    v_est, v_ok = stored("velocity_cm_s")
+    a_est, a_ok = stored("acceleration_cm_s2")
+    interior = interior_mask(true_a, cfg.window_frames / 2)
+    v_in, a_in = interior & v_ok, interior & a_ok
+    return FullDensityErrors(
+        frames_interior=int(interior.sum()),
+        frames_null=int(np.count_nonzero(~(v_ok & a_ok))),
+        position_cm=max_abs_rms(x_est[interior], true_x[interior]),
+        velocity_cm_s=max_abs_rms(v_est[v_in], true_v[v_in]),
+        acceleration_cm_s2=max_abs_rms(a_est[a_in], true_a[a_in]),
+    )
+
+
 def full_density_check(
     frames: int, base_dir: Path | None = None, config: Config | None = None
 ) -> FullDensityResult:
-    """Generate `frames` frames at the real density, ingest, compute motion, evaluate, clean up.
+    """Generate `frames` frames at the real density, ingest, compute motion, compare, clean up.
 
     Uses generate_to_disk into a temp folder under base_dir (the system temp folder when None)
-    and a temp lake, then evaluate_drive with the YAML motion config. Also runs the same
+    and a temp lake, then compares the stored motion table with the in-memory truth of the
+    scenario (compare_stored_motion) with the YAML motion config. Also runs the same
     scenario at 10 points per axis in memory and returns the largest difference (cm) between
     the stored centroid x (motion table x_cm) and the small-lattice centroid x. Raises
     RuntimeError, before writing anything, when the free disk space is under twice
@@ -690,8 +755,9 @@ def full_density_check(
             raise RuntimeError(f"ingest status {result.status!r}")
         client = VLClient(lake)
         compute_motion(client, lake, drive_dir.name, full, cfg)
-        report = evaluate_drive(drive_dir, client, full, cfg)
-        stored_x = client.motion(drive_dir.name).sort_by("frame_id").column("x_cm").to_numpy()
+        motion = client.motion(drive_dir.name).sort_by("frame_id")
+        report = compare_stored_motion(motion, scenario, full, cfg)
+        stored_x = motion.column("x_cm").to_numpy()
     finally:
         shutil.rmtree(work, ignore_errors=True)
         if work.exists():
@@ -708,7 +774,7 @@ def _format_full_density(result: FullDensityResult) -> str:
     return "\n".join(
         [
             f"Full-density check: {result.frames} frames at 100 points per axis, "
-            f"{r.frames_interior} interior, {r.frames_null} null; passed={r.passed}",
+            f"{r.frames_interior} interior, {r.frames_null} null",
             f"{'':<22}{'int vel max':>12}{'int vel rms':>12}{'int acc max':>12}{'int acc rms':>12}",
             f"{'full density':<22}"
             f"{_fmt(r.velocity_cm_s.max_abs, 12)}{_fmt(r.velocity_cm_s.rms, 12)}"
@@ -763,7 +829,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         type=int,
         default=DEFAULT_RANDOM_SEARCH,
         metavar="N",
-        help="random scenarios measured for the tolerances (the pinned ones are always added)",
+        help="random scenarios measured beside the sweep drives (the pinned ones are always added)",
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="seed of the random search")
     parser.add_argument(
@@ -805,12 +871,6 @@ def main(argv: Sequence[str] | None = None, drives: Sequence[SweepDrive] | None 
     search = random_search(
         motion_config_for(chosen.window_frames, chosen.poly_order), args.random_search, args.seed
     )
-    velocity_measured = max(chosen.worst_interior_velocity_max(), search.worst_velocity_cm_s)
-    acceleration_measured = max(
-        chosen.worst_interior_acceleration_max(), search.worst_acceleration_cm_s2
-    )
-    velocity_tol = tolerance_from_measured(velocity_measured)  # cm/s
-    acceleration_tol = tolerance_from_measured(acceleration_measured)  # cm/s^2
     print()
     print(
         f"Chosen: window {chosen.window_frames} frames, order {chosen.poly_order}, "
@@ -833,18 +893,12 @@ def main(argv: Sequence[str] | None = None, drives: Sequence[SweepDrive] | None 
         f"(seed {search.seed}): velocity {search.worst_velocity_cm_s:.3f} cm/s, acceleration "
         f"{search.worst_acceleration_cm_s2:.3f} cm/s^2"
     )
-    print(
-        f"Tolerances (x{TOLERANCE_MARGIN} of the larger, rounded up to 0.1): velocity "
-        f"{velocity_tol} cm/s, acceleration {acceleration_tol} cm/s^2"
-    )
     if args.write_yaml:
         basis = (
             f"a random-scenario search ({search.examples} scenarios, {len(PINNED_LEGS)} pinned, "
             f"seed {search.seed})"
         )
-        write_yaml(
-            args.yaml, chosen, velocity_tol, acceleration_tol, date.today().isoformat(), basis
-        )
+        write_yaml(args.yaml, chosen, date.today().isoformat(), basis)
         print(f"Wrote {args.yaml}")
     if args.full_density_check > 0:
         frames = args.full_density_check

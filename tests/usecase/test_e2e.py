@@ -1,4 +1,4 @@
-"""Generate, ingest, motion and evaluate the 1000-frame demo scenario. Small body."""
+"""Generate, ingest and compute motion for the 1000-frame demo scenario. Small body."""
 
 from pathlib import Path
 
@@ -34,9 +34,6 @@ def test_demo_drive_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     motion = runner.invoke(app, ["motion", drive_dir.name, "--lake-dir", lake_dir])
     assert motion.exit_code == 0, motion.output
     assert "frames_read: 1000" in motion.output
-    evaluation = runner.invoke(app, ["evaluate", str(drive_dir), "--lake-dir", lake_dir])
-    assert evaluation.exit_code == 0, evaluation.output
-    assert "PASS" in evaluation.output
 
     client = VLClient(Lake(tmp_path / "lake"))
     rows = client.sql("SELECT count(*) AS n FROM motion")

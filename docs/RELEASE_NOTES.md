@@ -8,11 +8,11 @@ number below comes from a real run; items marked "planned" have not been run.
 
 A small data product for a vehicle-location signal. It generates a mock drive from a start
 position and a motion profile, stores the point cloud, extracts the vehicle's velocity and
-acceleration from the points alone, and shows the result next to the known truth. The vehicle
+acceleration from the points alone, and stores the result as a queryable motion table. The vehicle
 is a 1 m cube that moves in a straight line, forwards, backwards and stopped, at different
 speeds. All data is synthetic.
 
-Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames, and `evaluate` checks the result against the ground truth and prints PASS or FAIL against tolerances in `config/motion.yaml`. The Python SDK (`VLClient`) and SQL read the lake.
+Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames. The Python SDK (`VLClient`) and SQL read the lake.
 
 ## What is in this version
 
@@ -20,7 +20,7 @@ Module 3 adds the use case: `motion` turns the stored centroid position of a dri
 |---|---|---|
 | Generator | Writes a hashed drive: 16 fps point cloud, ground truth, manifest. Checks itself by recovering the scenario from the data. | Built |
 | Loader / ETL | Verifies hashes, validates frames with error codes VL-001 to VL-006, keeps 9 keypoints per frame, and writes keypoints, quarantine and lineage tables to a queryable lake. | Built |
-| Use-case algorithm | Computes velocity and acceleration and compares them with ground truth (`motion`, `evaluate`, `VLClient`). | Built |
+| Use-case algorithm | Computes velocity and acceleration into a motion table (`motion`, `VLClient`). | Built |
 | BI | One Streamlit app: generate, clean, analyze. | Planned |
 
 ## Install and first check (run on 2026-10-23, Windows PowerShell, Python 3.12.6)
@@ -187,25 +187,20 @@ exit 0, `status: ok`, `frames_kept: 1000`, `frames_quarantined: 0`, `keypoint_ro
 wall-clock time for generate plus ingest (one run, measured). Three tests need an OS or account
 that can create symlinks or odd folder names and were skipped on this machine.
 
-### Motion and evaluation (Module 3)
+### Motion (Module 3)
 
-Compute the centroid velocity and acceleration of an ingested drive, then compare them with the
-ground truth:
+Compute the centroid velocity and acceleration of an ingested drive:
 
 ```powershell
 python -m vl_data motion <hash12> --lake-dir warehouse
-python -m vl_data evaluate data/raw/<hash12> --lake-dir warehouse
 ```
 
 `motion` prints `drive`, `frames_read`, `frames_estimated` and `frames_null` (counts of frames; a
-frame is null when its velocity or acceleration has no estimate). `evaluate` prints the scenario
-hash, the frames compared, interior and null, and the interior max and RMS error of position
-(cm), velocity (cm/s) and acceleration (cm/s^2) with their tolerances and the all-frame
-velocity and acceleration errors, then `result: PASS` or `result: FAIL`. Both use the exit codes
-of `ingest` (0 done or passed, 1 refused, failed or a tolerance exceeded, 2 usage or
-configuration error, 3 a file could not be read or written; inside `evaluate` a read failure during the comparison is reported as a failure, code 1) and the same lake folder rule
-(`--lake-dir`, else `VL_LAKE_DIR`, `config/etl.yaml`, `warehouse`). Window, order and
-tolerances are in `config/motion.yaml`. The failures are listed in `docs/USE_CASE_ERRORS.md`.
+frame is null when its velocity or acceleration has no estimate). It uses the exit codes of
+`ingest` (0 done, 1 refused or failed, 2 usage or configuration error, 3 a file could not be read
+or written) and the same lake folder rule (`--lake-dir`, else `VL_LAKE_DIR`, `config/etl.yaml`,
+`warehouse`). Window and order are in `config/motion.yaml`. The failures are listed in
+`docs/USE_CASE_ERRORS.md`.
 
 Real run (2026-10-25, full density: demo scenario, 1,000 frames x 1,000,000 points; times are
 wall-clock, one machine). All exit codes were 0.
@@ -216,10 +211,7 @@ wall-clock, one machine). All exit codes were 0.
 | `ingest <work>/raw/bf394b9bfb42 --lake-dir <work>/lake` | 56 s | `status: ok`, `frames_kept: 1000`, `keypoint_rows: 9000` |
 | `motion bf394b9bfb42 --lake-dir <work>/lake` | 1 s | `frames_read: 1000 frames`, `frames_estimated: 1000 frames`, `frames_null: 0 frames` |
 | `motion` again | 2 s | same; the motion partition file hash did not change |
-| `evaluate <work>/raw/bf394b9bfb42 --lake-dir <work>/lake` | 2 s | `frames_interior: 880 frames`, position 0.498 cm, velocity 3.520 cm/s, acceleration 4.378 cm/s^2 (interior max), `result: PASS` |
-| `pytest tests/ -q` | 66 s | 851 passed, 4 skipped |
-
-The full `evaluate` output is in `docs/ARCHITECTURE.md` (Module 3, Command line).
+| `pytest tests/ -q` | 66 s | 851 passed, 4 skipped (before the evaluation was removed; on 2026-10-27 the suite gives 800 passed, 4 skipped in 121 s) |
 
 Query the motion table from Python. This example was run on 2026-10-25 (measured) with the small body
 (100 cm cube, 10 points per axis) and the demo scenario, in a scratch lake. It opens your own lake
@@ -274,11 +266,10 @@ Dashboard examples for the app will be added when Module 4 exists.
 - Per-frame acceleration is not checked by any loader rule.
 - The point-cloud check (VL-004) allows for the 1 cm rounding wobble of whole-centimetre points. A single point moved by exactly 1 cm is not detected; a move of 2 cm or more is.
 - The loader decides which frame is a teleport by comparing positions. If the first three clean frames of a drive are themselves inconsistent, the loader trusts the most tightly agreeing pair; a drive that starts with several bad frames may be judged wrongly.
-- Motion (Module 3): the motion table is not refreshed by a new ingest. After re-ingesting a drive, run `motion` again; until then `evaluate` stops with an error if the frame count changed, and compares stale values if it did not.
+- Motion (Module 3): the motion table is not refreshed by a new ingest. After re-ingesting a drive, run `motion` again; until then the motion table holds the values of the earlier ingest.
 - `VLClient.sql` runs any single SELECT, including `read_parquet` on any file the user can read. It is a local single-user tool; do not expose it to untrusted input (assumption M3-A10).
-- The 16-frame least-squares fit smooths speed changes and the ends of a clip: frames within 8 frames of a change of acceleration, and the first and last 8 frames, carry larger errors (all-frame acceleration max 55.678 cm/s^2 against 4.378 cm/s^2 on interior frames, measured on the demo drive; assumption M3-A29).
-- `tools/motion_sweep.py` is a measuring tool whose logic is not type-checked by mypy.
-- `evaluate` hashes every file of the drive before it compares anything (`verify_drive`). The points are 12 GB per 1,000 full-density frames uncompressed; on disk they are compressed, and the measured `evaluate` took 2 s on the full-density demo drive. Noisier data would take longer (assumption M3-A33).
+- The 16-frame least-squares fit smooths speed changes and the ends of a clip: frames within 8 frames of a change of acceleration, and the first and last 8 frames, carry larger errors (all-frame acceleration max 55.678 cm/s^2 against 4.378 cm/s^2 on interior frames, a development measurement against the in-memory truth of the demo drive, from `tools/motion_sweep.py`; assumption M3-A29).
+- `tools/motion_sweep.py` is a developer measuring tool whose logic is not type-checked by mypy. It compares the estimator with the in-memory truth of generated drives; the product does not.
 - Single machine, CPU only.
 
 ## Coming soon
@@ -288,4 +279,4 @@ clip candidates, Apache Iceberg as the table format, a REST API, streaming inges
 Kafka), parallel loading of many drives, a data-quality report function, a Spark backend for many
 drives, an object-store profile, scheduled runs, and delta-encoded storage.
 
-Module 3 follow-ups: a stored evaluation table (today the report is printed and not stored), event detection on the motion table, a REST API over the SDK, and a Kalman or RTS smoother as an alternative to the window fit.
+Module 3 follow-ups: event detection on the motion table, a REST API over the SDK, and a Kalman or RTS smoother as an alternative to the window fit.

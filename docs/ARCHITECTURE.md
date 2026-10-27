@@ -9,7 +9,7 @@ checked by tests and by a full-density run. Module 4 (the BI app) is planned. An
 It is a small end-to-end data product for a vehicle-location signal: a mocked data source, an
 ETL, a queryable warehouse, and a BI view. All data is synthetic. The vehicle is a 1 m cube
 that moves in a straight line along x. The use case is extracting its velocity and
-acceleration from the point cloud alone and showing that the result matches the known truth.
+acceleration from the point cloud alone and storing the result as a queryable motion table.
 
 ## Modules
 
@@ -25,7 +25,7 @@ acceleration from the point cloud alone and showing that the result matches the 
 |---|---|---|
 | 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud, ground truth, manifest. Check itself in both directions. | Built |
 | 2 Loader / ETL | Verify hashes, validate frames (VL-001 to VL-006), reduce each frame to 9 keypoints, write to the lake. | Built |
-| 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. Evaluate against ground truth. | Built |
+| 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. | Built |
 | 4 BI | One Streamlit app with three tabs: Generate, Clean, Analyze. | Planned |
 
 Shared code lives in `core/`: config loader, Arrow schemas, hashing, the manifest, and later the
@@ -103,7 +103,6 @@ Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 | quarantine | bronze (built) | one row per rejected frame or missing frame number: frame_id, row_index, code, message; a drive-level row has no frame_id |
 | lineage | bronze (built) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames and ground-truth file hashes |
 | motion | silver (built) | per-frame x, velocity, acceleration |
-| evaluation tables | gold (planned) | errors against ground truth |
 
 The warehouse tables use a generic, use-case-independent shape: a drive and frame key, a
 timestamp, and numeric measures.
@@ -423,7 +422,7 @@ lists the drives that have keypoints. `keypoints(drive, keypoint=None)`, `motion
 (no `drive` column); keypoints are ordered by `frame_id`, then keypoint name. A valid unknown
 drive gives an empty table; an invalid drive id (for example `a/b` or empty) raises
 `ValueError` from the Lake. `sql(query) -> pa.Table` runs one SELECT over the table views (which do have a `drive`
-column) and closes its DuckDB connection after every query. The SDK never opens ground truth.
+column) and closes its DuckDB connection after every query. The SDK reads only the lake.
 
 The `motion` table (`MOTION_SCHEMA`) has one row per frame: `frame_id` int64, `timestamp_ns`
 int64, `x_cm` float64, `velocity_cm_s` float64 (null where there is no estimate),
@@ -446,10 +445,12 @@ The sweep generates two drives in memory with a 100 cm cube of 10 points per axi
 scenario (1,000 frames) and a harder drive of 624 frames (stop 4 s; ramp 0 to 600 cm/s over 3 s,
 200 cm/s^2; cruise 6 s; reversal 600 to -600 cm/s over 3 s, 400 cm/s^2; cruise 5 s; slow to 0 over
 3 s; stop 15 s). For each frame it takes the mean x of the points (the centroid, cm) and the true
-velocity and acceleration from the in-memory ground truth (no file and no lake is read). Errors are
-estimate minus truth. "int" columns use interior frames (no change of true acceleration within half
-a window of the frame, the last frame excluded; the same function `evaluate.interior_mask` that
-`evaluate_drive` uses); "all" columns use every frame with an estimate. The baseline row uses
+velocity and acceleration that the tool computes from the scenario itself (`true_motion` in
+`tools/motion_sweep.py`: the speed profile, forward-Euler position and forward differences; no file
+and no lake is read). These are development measurements against that in-memory truth, not a check
+that the pipeline runs. Errors are estimate minus truth. "int" columns use interior frames (no
+change of true acceleration within half a window of the frame, the last frame excluded; the
+function `interior_mask` in the same tool); "all" columns use every frame with an estimate. The baseline row uses
 central differences of the centroid x (forward and backward at the ends) and a one-frame half
 window. For each cell `min_points` is `window // 2 + 1`, so the one-sided window at the clip ends
 still fits, and `max_gap_frames` is the config default, 4. Real output (measured):
@@ -507,7 +508,6 @@ Chosen: window 16 frames, order 2, min_points 9, max_gap_frames 4
 Without the interior-fraction requirement (80%) the plain rule would choose window 48, order 2 (53.2% of frames interior in the worst drive)
 Measured worst-case interior max error, sweep drives: velocity 12.902 cm/s, acceleration 4.378 cm/s^2
 Measured worst-case interior max error, 1502 random and pinned scenarios (seed 0): velocity 8.848 cm/s, acceleration 21.212 cm/s^2
-Tolerances (x1.5 of the larger, rounded up to 0.1): velocity 19.4 cm/s, acceleration 31.9 cm/s^2
 ```
 
 Selection rule. Among the window x order cells, take the lowest worst-case (larger of the two
@@ -533,30 +533,29 @@ acceleration errors than the baseline on both drives (tests). It does not have a
 velocity max error: 11.4 against 9.5 cm/s (demo) and 45.9 against 19.0 cm/s (hard), because the
 16-frame fit smooths across speed changes and the clip ends (measured).
 
-Tolerances are 1.5 times the largest measured interior max error, rounded up to 0.1 (never below
-the measured value, never zero). The measured value is the largest of the chosen cell on the two
-sweep drives and on a seeded random-scenario search. The sweep drives start and end at rest, so
-they never test slow motion (where the integer-cm rounding of the centroid is a staircase) or a
-clip that ends while moving (the first and last 8 frames use a one-sided window). The search
-(`--random-search N`, default 1,500, `--seed`, default 0) draws N scenarios with numpy's RNG (up to
-5 legs of 48 to 96 frames, end speeds up to 400 cm/s) and always adds two pinned scenarios, the
-counterexamples the Hypothesis test found: one 48-frame move from 0 to 2 cm/s (interior
-acceleration max error 12.909 cm/s^2) and five 96-frame moves towards -68 cm/s (19.530 cm/s^2);
-the sweep drives alone would give only 4.378 cm/s^2 x 1.5 = 6.6 cm/s^2. Measured over the 1,502
-scenarios of the run above (seed 0): worst interior velocity 8.848 cm/s and acceleration
-21.212 cm/s^2. The tolerances are therefore velocity 12.902 x 1.5 = 19.4 cm/s (sweep drives) and
-acceleration 21.212 x 1.5 = 31.9 cm/s^2. Other seeds, 1,500 scenarios each (measured, not used
-for the YAML): seed 1 gives 9.806 cm/s and 25.364 cm/s^2, seed 2 gives 10.669 and 19.818, seed 3
-gives 12.381 and 19.896, all below the tolerances. The velocity error of about 12.5 cm/s on the
-hard drive is the forward-difference truth against the centred fit, a/32 for a = 400 cm/s^2
-(assumption M3-A17).
+Random-scenario search. The sweep drives start and end at rest, so they never test slow motion
+(where the integer-cm rounding of the centroid is a staircase) or a clip that ends while moving
+(the first and last 8 frames use a one-sided window). The tool therefore also measures the chosen
+cell on a seeded random-scenario search (`--random-search N`, default 1,500, `--seed`, default 0).
+It draws N scenarios with numpy's RNG (up to 5 legs of 48 to 96 frames, end speeds up to 400 cm/s)
+and always adds two pinned scenarios, the counterexamples the Hypothesis test found: one 48-frame
+move from 0 to 2 cm/s (interior acceleration max error 12.909 cm/s^2) and five 96-frame moves
+towards -68 cm/s (19.530 cm/s^2); the sweep drives alone would give only 4.378 cm/s^2. Measured
+over the 1,502 scenarios of the run above (seed 0): worst interior velocity 8.848 cm/s and
+acceleration 21.212 cm/s^2. Other seeds, 1,500 scenarios each (measured on 2026-10-25): seed 1 gives
+9.806 cm/s and 25.364 cm/s^2, seed 2 gives 10.669 and 19.818, seed 3 gives 12.381 and 19.896. The
+velocity error of about 12.5 cm/s on the hard drive is the forward-difference truth against the
+centred fit, a/32 for a = 400 cm/s^2 (assumption M3-A17). The pipeline does not use these numbers
+as limits; `tests/usecase/test_estimator.py` keeps them as regression bounds (velocity 19.4 cm/s,
+acceleration 31.9 cm/s^2, 1.5 times the largest measured value, rounded up to 0.1), so a change to
+the estimator that makes it worse fails a test.
 
-Full-density check (measured once, 2026-10-25, 300 frames; the block is an excerpt of the command
-output, the first lines of the report):
+Full-density check (measured on 2026-10-27, 300 frames, the same command run again after the
+evaluation was removed; the block is an excerpt of the command output):
 
 ```
 python tools/motion_sweep.py --full-density-check 300
-Full-density check: 300 frames at 100 points per axis, 248 interior, 0 null; passed=True
+Full-density check: 300 frames at 100 points per axis, 248 interior, 0 null
                        int vel max int vel rms int acc max int acc rms
 full density                 6.549       2.990       4.681       1.081
 10 points per axis           6.549       2.990       4.681       1.081
@@ -566,11 +565,13 @@ Units: velocity cm/s, acceleration cm/s^2.
 ```
 
 The 300 frames were generated at 100 points per axis with `generate_to_disk`, ingested into a temp
-lake, run through `compute_motion` and `evaluate_drive`, and the temp folders deleted. In this
+lake, run through `compute_motion`, the stored motion table compared with the in-memory truth, and
+the temp folders deleted. In this
 one run the interior errors match the small-lattice run of the same scenario to every printed
 digit and the centroid x values are identical (measured once on 300 frames). A unit test checks
 the identity behind it, centroid x = 49.5 + rint(x) for 2, 10 and 100 points per axis, on single
-frames. The check took 37.8 s in total. The tool limits N to 600 frames, prints the estimated
+frames. The whole command (sweep, random search and this check) took 99 s (measured on
+2026-10-27). The tool limits N to 600 frames, prints the estimated
 size (12 MB per frame) and refuses to start when free disk space is under twice that estimate.
 
 ### Data flow
@@ -578,29 +579,23 @@ size (12 MB per frame) and refuses to start when free disk space is under twice 
 ```
 raw drive folder --ingest--> lake: keypoints, quarantine, lineage
 lake keypoints (centroid rows) --motion--> lake: motion
-motion + raw drive ground truth --evaluate--> printed report (not stored)
 VLClient.sql / keypoints / motion  <-- read the lake
 ```
 
 `motion <drive_id>` reads the drive's lineage row (it must exist, be the only one, and have status
 `ok`) and its centroid keypoint rows through `VLClient`, fits the sliding window on the real
-timestamps, and replaces the drive's motion partition in one swap. It never opens the raw drive
-or the ground truth. `evaluate <drive_dir>` is the only code that reads the ground truth
-(`vl_data.usecase.evaluate`; a test greps the rest of `vl_data.usecase` and `vl_data.sdk` for it).
-It checks the drive files and hashes first, then the lineage hashes, then compares the stored
-motion with the truth frame by frame and returns the report; nothing is stored.
+timestamps, and replaces the drive's motion partition in one swap. It never opens the raw drive.
 
 ### Command line (built)
 
 ```powershell
 python -m vl_data motion <drive_id> [--lake-dir DIR]
-python -m vl_data evaluate <drive_dir> [--lake-dir DIR]
 ```
 
 The lake folder is `--lake-dir`, else `VL_LAKE_DIR`, else `lake_dir` in `config/etl.yaml`, else
-`warehouse` (the same resolution as `ingest`, through `load_etl_config()`). The window, order and
-tolerances come from `config/motion.yaml`. Exit codes follow `ingest`: 0 done (evaluate: passed),
-1 refused or failed (`MotionError`, `EvaluationError`, or a tolerance exceeded), 2 usage or
+`warehouse` (the same resolution as `ingest`, through `load_etl_config()`). The window and order
+come from `config/motion.yaml`. Exit codes follow `ingest`: 0 done, 1 refused or failed
+(`MotionError`, or any other unexpected failure), 2 usage or
 configuration error (including a lake folder that does not exist), 3 a file could not be read or
 written. The named failures are in `docs/USE_CASE_ERRORS.md`.
 
@@ -613,32 +608,12 @@ drive: bf394b9bfb42
 frames_read: 1000 frames
 frames_estimated: 1000 frames
 frames_null: 0 frames (velocity or acceleration is null)
-
-> python -m vl_data evaluate <work>/raw/bf394b9bfb42 --lake-dir <work>/lake   (exit 0, 2 s)
-scenario_hash: bf394b9bfb421fda860ab97fbab54d5c36c995a661e770969cbffd9a2afa95c1
-frames_compared: 1000 frames
-frames_interior: 880 frames
-frames_null: 0 frames
-position (cm): interior max 0.498 rms 0.217 | tolerance 0.6
-velocity (cm/s): interior max 3.520 rms 1.460 | tolerance 19.4 | all frames max 11.412 rms 1.836
-acceleration (cm/s^2): interior max 4.378 rms 1.000 | tolerance 31.9 | all frames max 55.678 rms 6.240
-result: PASS
 ```
 
 A second `motion` run left the motion partition file byte-identical (sha256
 `fdab85419d40c367dc6486db5c5b4951a68d5e2cb6d12f3f29a2b9ce96b796e0` both times, measured). The full
-suite after the run: 851 passed, 4 skipped in 66 s (measured). The log is local and git-ignored:
-`.claude/run-proofs/M3-TASK-7-iter1.log`.
-
-### Evaluation
-
-A frame is interior when no change of true acceleration lies within half a window (8 frames at
-the default 16) of it; the last frame never is. The pass test uses interior frames only: position
-error at most `tolerances.position_cm` in `config/default.yaml`, velocity error at most
-`tolerances.velocity_cm_s` and acceleration error at most `tolerances.acceleration_cm_s2` in
-`config/motion.yaml`. The all-frame errors are printed for information. In the run above the
-all-frame acceleration maximum (55.678 cm/s^2) is above the tolerance because frames next to a
-change of acceleration are included; the interior maximum (4.378 cm/s^2) is the gated number.
+suite on 2026-10-27, after the evaluation was removed: 800 passed, 4 skipped in 121 s (measured).
+The run-proof log is local and git-ignored: `.claude/run-proofs/M3-TASK-7-iter1.log`.
 
 ### Technology reasons and alternatives
 

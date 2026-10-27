@@ -9,15 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 DEFAULT_MOTION_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "motion.yaml"
 
 
-class MotionTolerances(BaseModel):
-    """Agreement limits in cm/s and cm/s^2 used when comparing fitted motion with truth."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    velocity_cm_s: float = Field(default=19.4, gt=0, allow_inf_nan=False)  # cm/s
-    acceleration_cm_s2: float = Field(default=31.9, gt=0, allow_inf_nan=False)  # cm/s^2
-
-
 class MotionConfig(BaseModel):
     """Sliding-window polynomial fit settings; window and gap sizes are in frames."""
 
@@ -30,7 +21,6 @@ class MotionConfig(BaseModel):
     # (4 bridges 3 missing frames)
     max_gap_frames: StrictInt = Field(default=4, ge=1, le=1000)
     position_keypoint: str = Field(default="centroid", min_length=1)  # name in config/etl.yaml
-    tolerances: MotionTolerances = Field(default_factory=MotionTolerances)
 
     @model_validator(mode="after")
     def _check_sizes(self) -> Self:
