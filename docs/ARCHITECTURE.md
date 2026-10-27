@@ -189,11 +189,10 @@ demo drive `bf394b9bfb42`, 1,000 frames of 1,000,000 points, row groups of 50 fr
 first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB
 (log `.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and
 1,718 MiB (`.claude/run-proofs/TASK-4-measure.log`). One first run in
-`.claude/run-proofs/TASK-4-measure-iter2.log` took 3,730 s (its re-ingest took 44.5 s); CPU time
-was only about 54 s while it ran. The cause is unknown and it was not reproduced in two later runs,
-so it is an open outlier: the next full-density run should log free memory and disk. A frame scan
-of 91 s and 1.59 GiB before a speed-up was measured once in a session; the output was not saved to
-a log. These are single measurements, not a benchmark suite.
+`.claude/run-proofs/TASK-4-measure-iter2.log` took 3,730 s (its re-ingest took 44.5 s). The cause
+is unknown and it was not reproduced in two later runs, so it is an open outlier: the next
+full-density run should log free memory and disk. These are single measurements, not a benchmark
+suite.
 
 A drive folder is treated as hostile input. Before anything large is allocated: the manifest's points
 per frame must not exceed `max_points_per_frame` (2,000,000 points); the lattice is built only after
@@ -225,7 +224,7 @@ The corner lattice indices are derived from the number of points per axis n as `
 | `etl/rules.py` | `RULES`, `RuleContext`, `run_rules` | Six rules with their codes, meaning, detection text and example fault. Drive rules (VL-005) and frame rules (VL-001 to VL-004, VL-006). VL-006 runs only on frames that passed the others. |
 | `etl/body.py` | `drive_body`, `expected_frame_count` | `drive_body(manifest)` returns the body from `manifest.body`; `expected_frame_count(manifest)` is the number of frames the scenario implies, used by VL-001. |
 
-On 2026-10-27, after ground truth left the product and `main` (Modules 1, 3 and 4) was merged into this branch, the ETL tests numbered 282 and the whole suite gave 898 passed, 4 skipped in 110 s (measured; line coverage of the whole package 99%, of the ETL package 99%, with `ingest.py` and `facts.py` at 100% and two uncovered lines in `rules.py`). The four skips are Windows limits on this machine (symlinks need a privilege; a folder name with ESC and a newline cannot be made). On 2026-10-25 the ETL tests numbered 284 and the whole suite 649 (645 passed, 4 skipped in 64 s). At the earlier ingest milestone the same day the ETL tests numbered 214 (481 in the whole suite, after the hostile-folder repair pass), and line coverage of the ETL package was 99% (`ingest.py` and `facts.py` 100%; the two uncovered lines are in `rules.py`). Ingesting the demo drive on a 1,000-point test body kept 1,000 of 1,000 frames and wrote 9,000 keypoint rows (checked by a test); each of the five frame faults gave exactly one quarantine row; a changed byte, a missing manifest, a schema-1 manifest, a renamed drive folder and a renamed points column each rejected the whole drive; ingesting twice left all three table files byte-identical.
+On 2026-10-27, after ground truth left the product and `main` (Modules 1, 3 and 4) was merged into this branch, the ETL tests numbered 282 and the whole suite gave 939 passed, 5 skipped in 128 s after `main` with the BI ingest button was merged (measured; line coverage of the whole package 99%, of the ETL package 99%, with `ingest.py` and `facts.py` at 100% and two uncovered lines in `rules.py`). The five skips are Windows limits on this machine (symlinks need a privilege; a folder name with ESC and a newline cannot be made). On 2026-10-25 the ETL tests numbered 284 and the whole suite 649 (645 passed, 4 skipped in 64 s). At the earlier ingest milestone the same day the ETL tests numbered 214 (481 in the whole suite, after the hostile-folder repair pass), and line coverage of the ETL package was 99% (`ingest.py` and `facts.py` 100%; the two uncovered lines are in `rules.py`). Ingesting the demo drive on a 1,000-point test body kept 1,000 of 1,000 frames and wrote 9,000 keypoint rows (checked by a test); each of the five frame faults gave exactly one quarantine row; a changed byte, a missing manifest, a schema-1 manifest, a renamed drive folder and a renamed points column each rejected the whole drive; ingesting twice left all three table files byte-identical.
 
 On 2026-10-24 the ETL package had 151 tests (381 in the whole suite), and line coverage of the ETL package was 99%. Running the rules on the demo drive (1,000 frames on a 125-point test body) gave no violations, and each of the six generator faults produced exactly its own code. The full-density behaviour of the scan is not measured yet.
 
