@@ -20,10 +20,11 @@ DECISIONS
 - API: Python SDK (VLClient) + SQL. No web service (FastAPI is "coming soon").
   Confirmed by the user on 2026-10-23. VLClient is built in Module 3 and reads through
   core/lake.py, which Module 2 builds.
-- Ground truth is stored outside the warehouse and read only by the evaluation step.
+- Ground truth is stored outside the warehouse. Since 2026-10-26 nothing in the product reads
+  it (the evaluation was removed).
 - Every file is hashed (SHA-256). manifest.json lists the scenario hash and the hash of
   every file. A lineage table links scenario hash -> file hashes -> row counts, so data
-  can be tied to its scenario and checked against ground truth.
+  can be tied to its scenario and checked against the manifest.
 - Quality: Typer CLI, pytest + hypothesis, ruff, mypy, src layout, Python 3.11,
   Windows PowerShell (python -m ... only).
 
@@ -203,8 +204,8 @@ DECISIONS LOG (plan-loop for Module 3, 2026-10-24 and 2026-10-25)
   (19.4 cm/s, 31.9 cm/s^2) live in tests/usecase/test_estimator.py.
 - VLClient returns Arrow tables; sql allows exactly one SELECT; each query closes its
   connection. Known issue: a SELECT can still read any file via read_parquet (accepted).
-- Evaluation result: returned and printed only, not stored. It carries a per-frame table for
-  the BI Analyze tab (user decision D1, 2026-10-25).
+- Evaluation result (user decision D1, 2026-10-25): superseded on 2026-10-26, the evaluation
+  was removed.
 - Stale motion after a re-ingest is a known issue (re-run motion).
 - Docs: use-case errors listed without new codes (D5); technology alternatives documented,
   no extra estimator built (D6); this file is updated for Module 3 only (D7); SQL file reach
@@ -230,7 +231,7 @@ NEXT STEPS (2026-10-25)
 1. Modules 1 and 2 are built (Module 1 Generate tab and Module 2 ingest CLI committed).
 2. Module 3: the motion command, the end-to-end proof and the docs (done; the evaluation
    was removed on 2026-10-26).
-3. Module 4: the Streamlit app (Clean and Analyze tabs); Analyze uses the per-frame table
-   returned by evaluate_drive.
+3. Module 4: the Streamlit app (Clean and Analyze tabs); Analyze reads the motion table
+   through VLClient (there is no ground truth to compare with).
 4. Final pass before 2026-10-30: run every documented command from a fresh clone, regenerate
    docs/LLM_USAGE.md, make the required docs tracked, push, send the repo link.

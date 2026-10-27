@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
 import pytest
 
 from vl_data.core.config import BodyConfig, Config
@@ -382,6 +383,40 @@ def test_main_rejects_bad_arguments(args: list[str]) -> None:
     with pytest.raises(SystemExit) as info:
         sweep.main(args, drives=[])
     assert info.value.code == 2
+
+
+def test_compare_stored_motion_counts_nulls_and_measures_errors() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "seed": 0,
+            "start": {"x_cm": 0.0, "y_cm": 0.0, "z_cm": 0.0, "speed_cm_s": 0.0},
+            "segments": [{"type": "stop", "duration_s": 2.0}],
+        }
+    )  # 32 frames at 16 fps, always at x = 0: the true motion is all zeros
+    offset = 49.5  # (100 - 1) / 2 cm, the centroid of the 100 cm body above its origin
+    x = np.full(32, offset)
+    x[3] += 0.4
+    x[31] += 100.0  # the last frame is never interior, so this must not count
+    velocity = np.zeros(32)
+    velocity[5], velocity[10], velocity[31] = 2.0, -3.0, 900.0
+    acceleration = np.zeros(32)
+    acceleration[12], acceleration[31] = 4.0, 900.0
+    motion = pa.table(
+        {
+            "x_cm": pa.array(x),
+            "velocity_cm_s": pa.array(velocity, mask=np.isin(np.arange(32), [7, 8])),
+            "acceleration_cm_s2": pa.array(acceleration, mask=np.isin(np.arange(32), [8, 20])),
+        }
+    )
+    got = sweep.compare_stored_motion(motion, scenario, SMALL, MotionConfig())
+    assert got.frames_interior == 31
+    assert got.frames_null == 3  # frames 7, 8 and 20: a null velocity or acceleration
+    assert got.position_cm.max_abs == pytest.approx(0.4)
+    assert got.position_cm.rms == pytest.approx(np.sqrt(0.16 / 31))
+    assert got.velocity_cm_s.max_abs == pytest.approx(3.0)
+    assert got.velocity_cm_s.rms == pytest.approx(np.sqrt(13.0 / 29))  # 2 nulls left out
+    assert got.acceleration_cm_s2.max_abs == pytest.approx(4.0)
+    assert got.acceleration_cm_s2.rms == pytest.approx(np.sqrt(16.0 / 29))
 
 
 def test_full_density_check_refuses_when_disk_is_too_small(

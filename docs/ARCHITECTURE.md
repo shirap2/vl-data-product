@@ -652,7 +652,7 @@ partitioning and compaction, and scheduled runs with an orchestrator.
   what "not atomic" means above). Re-ingesting repairs a crash.
 - The speed limit of 9,000 cm/s is a Tesla's top speed (322 km/h, 8,944 cm/s) rounded up. A
   faster vehicle would be flagged as impossible motion.
-- Tolerances come from two sweep drives and a random-scenario search (see the sweep section) and
-  may widen when other scenarios are tried; the sweep drives start and end at rest.
+- The measured errors come from two sweep drives and a random-scenario search (see the sweep section)
+  and may widen when other scenarios are tried; the sweep drives start and end at rest.
 
 The full assumption list is in [ASSUMPTIONS.md](ASSUMPTIONS.md).
