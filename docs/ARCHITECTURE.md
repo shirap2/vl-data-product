@@ -1,16 +1,16 @@
 # Architecture and design
 
-Status as of 2026-10-25: the design below is agreed. Module 1 (the generator, with its Generate
-tab) and Module 2 (the loader and ETL: lake, rules, ingest and the command line) are built and
-tested. Modules 3 and 4 are designed in outline and will get their own plans. Anything marked
-"planned" has not been run.
+Status as of 2026-10-26: Modules 1 (generator), 2 (loader and ETL) and 3 (use case) are built and
+checked by tests and by a full-density run. Module 4 (the BI app) is built and checked by
+Streamlit's test runner and by one live-server start; it has not been opened in a browser by hand.
+Anything marked "planned" has not been run.
 
 ## What the product does
 
 It is a small end-to-end data product for a vehicle-location signal: a mocked data source, an
 ETL, a queryable warehouse, and a BI view. All data is synthetic. The vehicle is a 1 m cube
 that moves in a straight line along x. The use case is extracting its velocity and
-acceleration from the point cloud alone and showing that the result matches the known truth.
+acceleration from the point cloud alone and storing the result as a queryable motion table.
 
 ## Modules
 
@@ -24,10 +24,10 @@ acceleration from the point cloud alone and showing that the result matches the 
 
 | Module | Job | Status |
 |---|---|---|
-| 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud, ground truth, manifest. Check itself in both directions. | Built and tested |
-| 2 Loader / ETL | Verify hashes, validate frames (VL-001 to VL-006), reduce each frame to 9 keypoints, write to the lake. | Built and tested |
-| 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. Evaluate against ground truth. | Outline |
-| 4 BI | One Streamlit app with three tabs: Generate, Clean, Analyze. | Outline |
+| 1 Generator | Turn a start position and a motion profile into a hashed drive: point cloud and manifest. Check itself in both directions. | Built |
+| 2 Loader / ETL | Verify hashes, validate frames (VL-001 to VL-006), reduce each frame to 9 keypoints, write to the lake. | Built |
+| 3 Use-case algorithm | Read keypoints, compute velocity and acceleration, write a motion table. | Built |
+| 4 BI | One Streamlit app with four tabs: Generate, Clean, Analyze, SQL. | Built |
 
 Shared code lives in `core/`: config loader, Arrow schemas, hashing, the manifest, the `Lake`
 class and the lake table schemas. Imports only point down: entry points, then modules, then core. Core never imports a
@@ -43,6 +43,8 @@ src/vl_data/
                              inverse, faults, cli, scenarios/, ui/
   etl/                       Module 2 (built): config, body, keypoints, facts, rules,
                              ingest, errors_doc, cli
+  bi/                        Module 4 (built): data, figures, clean_tab,
+                             analyze_tab, sql_tab, shell, app
   core/lake.py, lake_schemas.py   Module 2 (built): the Lake class and the table schemas
 config/default.yaml          fps, output folder, body, tolerances, fit parameters
 config/etl.yaml              Module 2 (built): keypoint list, speed limit, chunk size
@@ -73,17 +75,16 @@ Not built yet: Module 3 (the use-case algorithm), and the Clean and Analyze tabs
 1. Load and validate the scenario YAML (start values and a list of `move` and `stop` segments).
 2. Hash it: SHA-256 of the canonical JSON of the body (`size_cm`, `points_per_axis`) and the scenario gives the drive hash.
 3. Build the speed for every frame (a straight-line ramp inside each segment), integrate the
-   position, and derive ground-truth velocity and acceleration by differences.
+   position.
 4. Build each frame's points: a 100x100x100 lattice (1,000,000 points) shifted by the rounded position.
-5. Write the frames and ground truth to a temporary folder, build the manifest from the file
-   hashes, swap the folder into place, and verify it.
+5. Write the frames to a temporary folder, build the manifest from the file hash, swap the folder into place, and verify it.
 
 `generate` in `drive.py` does steps 2 to 4 in memory and returns a `Drive` (scenario, hash, frames
-table, ground-truth table) by collecting `iter_frame_batches`, which yields record batches of 50 frames; at full density this is only for small drives. `write_drive` in `writer.py` does step 5 for such a drive. `generate_to_disk` streams the batches straight into the Parquet file (one batch is 600 MB of points, and the measured peak working set was 2,859 MiB, so the peak is several times one batch; its parts were not measured), writes the ground truth and manifest, and then runs `verify_drive`; the command line uses `generate_to_disk`.
+table) by collecting `iter_frame_batches`, which yields record batches of 50 frames; at full density this is only for small drives. `write_drive` in `writer.py` does step 5 for such a drive. `generate_to_disk` streams the batches straight into the Parquet file (one batch is 600 MB of points, and the measured peak working set was 2,859 MiB, so the peak is several times one batch; its parts were not measured), writes the manifest, and then runs `verify_drive`; the command line uses `generate_to_disk`.
 
 How a drive is written:
 
-- The temporary folder is `.tmp-*` inside the output folder and holds only the two Parquet files
+- The temporary folder is `.tmp-*` inside the output folder and holds only `frames.parquet`
   while the manifest is built. `manifest.json` is written last.
 - Parquet options are fixed so the same scenario gives the same bytes on the same pyarrow version:
   format version 2.6, zstd compression, no dictionary, statistics on, data page version 2.0 and
@@ -92,8 +93,9 @@ How a drive is written:
   is renamed into place, and then the `.old-*` folder is deleted. If the last rename fails, the
   old folder is moved back; if that also fails, the `.old-*` folder is kept (it holds the only
   copy of the old drive). The temporary folder is removed on any error.
-- The frames are never computed from `ground_truth.parquet`. Only manifest hashing and verify
-  read its bytes; the generator itself only writes it.
+- A drive written by an older version may hold a `ground_truth.parquet` listed in its manifest. It
+  still verifies, because the manifest lists every file that is present, and writing the same
+  scenario again replaces the whole folder.
 - Measured on the 1,000-frame demo at 1,000,000 points per frame (a scratch script with the same
   50-frame batching, `.claude/run-proofs/FULL-DENSITY-measure.log`): 75.1 s, peak working set
   2,859 MiB, `frames.parquet` 287,134,433 bytes with zstd (4,024,944,648 bytes with snappy). The
@@ -110,13 +112,11 @@ Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 | Table or file | Layer | Content |
 |---|---|---|
 | `frames.parquet` | raw drive | frame_id, timestamp_ns, points (1,000,000 x 3 int32 = 12,000,000 bytes at the shipped density, one binary column) |
-| `ground_truth.parquet` | raw drive | frame_id, timestamp_ns, x_cm, velocity_cm_s, acceleration_cm_s2 |
 | `manifest.json` | raw drive | schema version 2, drive hash, scenario, body (`size_cm`, `points_per_axis`), fps, counts, SHA-256 and size of each file |
 | keypoints | bronze (built) | one row per keypoint: frame_id, timestamp_ns, keypoint name, x, y, z (cm, float64); 9 rows per frame |
 | quarantine | bronze (built) | one row per rejected frame or missing frame number: frame_id, row_index, code, message; a drive-level row has no frame_id |
 | lineage | bronze (built) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames file hash |
-| motion | silver (planned) | per-frame x, velocity, acceleration |
-| evaluation tables | gold (planned) | errors against ground truth |
+| motion | silver (built) | per-frame x, velocity, acceleration |
 
 The warehouse tables use a generic, use-case-independent shape: a drive and frame key, a
 timestamp, and numeric measures.
@@ -127,7 +127,7 @@ timestamp, and numeric measures.
 |---|---|---|
 | `core/config.py` | `Config` (fps, raw_dir, body, tolerances, fit) and `load_config` | Unknown keys and non-positive values are rejected, and so is a `points_per_axis` above `size_cm` (checked when the config loads; ASSUMPTIONS A65). `fps` must divide 1,000,000,000 ns evenly (16 fps gives 62,500,000 ns). The environment variable `VL_RAW_DIR` overrides `raw_dir`. |
 | `core/hashing.py` | `canonical_json`, `sha256_hex`, `file_sha256`, `scenario_hash` | Keys are sorted, there are no spaces, and a float with a whole value is written as an int, so 600 and 600.0 hash the same. NaN and infinity are rejected. |
-| `core/schemas.py` | `FRAMES_SCHEMA`, `GROUND_TRUTH_SCHEMA`, `encode_points`, `decode_points` | A frame's points are `points_per_frame` x 3 int32 values in cm (1,000,000 at the shipped density), little-endian, row-major, in one binary column. |
+| `core/schemas.py` | `FRAMES_SCHEMA`, `encode_points`, `decode_points` | A frame's points are `points_per_frame` x 3 int32 values in cm (1,000,000 at the shipped density), little-endian, row-major, in one binary column. |
 | `core/manifest.py` | `Manifest`, `FileEntry`, `VerifyResult`, build, write, read, `verify_drive` | The manifest lists every file in the drive folder except itself. `verify_drive` reports changed, missing, extra and invalidly named files and a scenario that no longer matches its hash. A bad manifest, an unreadable file or a scenario that cannot be hashed is a reported problem, not an error. A pathological listed name (hundreds of characters) or a folder that cannot be listed can still raise an OSError. |
 | `core/lake_schemas.py` | `KEYPOINTS_SCHEMA`, `QUARANTINE_SCHEMA`, `LINEAGE_SCHEMA`, `TABLE_SCHEMAS` | One plain dict of table name to Arrow schema. A new table (for example `motion`) is one new entry; `Lake` accepts only names in this dict. |
 | `core/lake.py` | `Lake`: `swap_partition`, `drop_partition`, `list_drives`, `read`, `connect` | Layout `<root>/<table>/drive=<id>/part-0.parquet`. A swap writes a new folder under `<root>/_swap`, moves the old partition aside, renames the new one in, then deletes the old one; a failed write or rename keeps the old partition. The Parquet write options are pinned, so the same input gives the same bytes on one pyarrow version and the same batch boundaries (checked by a test). `connect()` returns an in-memory DuckDB connection with one view per table; the drive column is a VARCHAR, so a numeric-looking id is never read as a number. |
@@ -225,7 +225,7 @@ The corner lattice indices are derived from the number of points per axis n as `
 | `etl/rules.py` | `RULES`, `RuleContext`, `run_rules` | Six rules with their codes, meaning, detection text and example fault. Drive rules (VL-005) and frame rules (VL-001 to VL-004, VL-006). VL-006 runs only on frames that passed the others. |
 | `etl/body.py` | `drive_body`, `expected_frame_count` | `drive_body(manifest)` returns the body from `manifest.body`; `expected_frame_count(manifest)` is the number of frames the scenario implies, used by VL-001. |
 
-On 2026-10-25 (final state of this branch) the ETL tests numbered 284 and the whole suite 649 (645 passed, 4 skipped in 64 s, rerun on 2026-10-26 for the final docs pass; the 99% coverage figure is the Loader session's and was not re-measured then). At the earlier ingest milestone the same day the ETL tests numbered 214 (481 in the whole suite, after the hostile-folder repair pass), and line coverage of the ETL package was 99% (`ingest.py` and `facts.py` 100%; the two uncovered lines are in `rules.py`). Ingesting the demo drive on a 1,000-point test body kept 1,000 of 1,000 frames and wrote 9,000 keypoint rows (checked by a test); each of the five frame faults gave exactly one quarantine row; a changed byte, a missing manifest, a schema-1 manifest, a renamed drive folder and a renamed points column each rejected the whole drive; ingesting twice left all three table files byte-identical.
+On 2026-10-27, after ground truth left the product and `main` (Modules 1, 3 and 4) was merged into this branch, the ETL tests numbered 282 and the whole suite gave 898 passed, 4 skipped in 110 s (measured; line coverage of the whole package 99%, of the ETL package 99%, with `ingest.py` and `facts.py` at 100% and two uncovered lines in `rules.py`). The four skips are Windows limits on this machine (symlinks need a privilege; a folder name with ESC and a newline cannot be made). On 2026-10-25 the ETL tests numbered 284 and the whole suite 649 (645 passed, 4 skipped in 64 s). At the earlier ingest milestone the same day the ETL tests numbered 214 (481 in the whole suite, after the hostile-folder repair pass), and line coverage of the ETL package was 99% (`ingest.py` and `facts.py` 100%; the two uncovered lines are in `rules.py`). Ingesting the demo drive on a 1,000-point test body kept 1,000 of 1,000 frames and wrote 9,000 keypoint rows (checked by a test); each of the five frame faults gave exactly one quarantine row; a changed byte, a missing manifest, a schema-1 manifest, a renamed drive folder and a renamed points column each rejected the whole drive; ingesting twice left all three table files byte-identical.
 
 On 2026-10-24 the ETL package had 151 tests (381 in the whole suite), and line coverage of the ETL package was 99%. Running the rules on the demo drive (1,000 frames on a 125-point test body) gave no violations, and each of the six generator faults produced exactly its own code. The full-density behaviour of the scan is not measured yet.
 
@@ -308,8 +308,6 @@ From a scenario, `motion.py` builds, frame by frame:
 |---|---|
 | Speed | A move of n frames from speed a to speed b gives `a + i * (b - a) / n` at frame i, so the end speed is reached on the first frame of the next segment. A stop gives 0. |
 | Position | Forward Euler along x: `x[0]` is the start, `x[k+1] = x[k] + speed[k] / 16`. |
-| Ground-truth velocity | `(x[k+1] - x[k]) * 16`; the last frame repeats the previous value. |
-| Ground-truth acceleration | `(speed[k+1] - speed[k]) * 16` from the speed profile; the last frame repeats the previous value. |
 | Points | `place_body` returns `rint(lattice + [x, y, z])` as int32 cm. The lattice has 100 x 100 x 100 points on 0, 1, ... 99 cm, x-major, so the 8 corners are at indices 0, 99, 9,900, 9,999, 990,000, 990,099, 999,900, 999,999. |
 
 Real values for the demo scenario (run on 2026-10-24 at 1,000,000 points per frame): 1,000 frames in 8 segments; speeds from
@@ -324,7 +322,7 @@ whole centimetres.
 |---|---|---|---|---|
 | Motion model | Straight line along x, signed speed, no rotation | A cube's orientation cannot be read from its points | Planar motion, full rotation with a non-symmetric body | The real signal rotates |
 | Position estimate | Centroid of a frame's points | Exact for pure translation, needs no matching between frames | Tracking one reference point | Rotation or a changing point set |
-| Body | 1 m cube, 100 x 100 x 100 = 1,000,000-point lattice | Matches the assignment's example density; the PDF allows fewer frames, not thinner ones | A 10 x 10 x 10 sample (the earlier choice), a car-sized box | Storage or time limits |
+| Body | 1 m cube, 100 x 100 x 100 = 1,000,000-point lattice | The target density: 100 points per axis, 1,000,000 points per frame | A 10 x 10 x 10 sample (the earlier choice), a car-sized box | Storage or time limits |
 | Source | Generator writes a drive to disk | Simplest valid source | A service or a stream | Many consumers or live data |
 | Config | YAML plus a validating Python loader | Readable, fails early on bad values | Environment variables only, JSON | Many deployment environments |
 | Scenario validation | pydantic | Typed models with clear errors | dataclasses plus hand checks | Never needed so far |
@@ -338,7 +336,7 @@ whole centimetres.
 | Keypoint table layout | Long: one row per keypoint | Generic; the keypoint list is a YAML change; simple SQL filter by name | Wide: 27 coordinate columns per frame | Heavy column maths on the corners |
 | Bad frames | Quarantine only the failed frame, with a details-only row | One bad frame does not cost the drive; the raw frame stays in `data/raw/` | Reject the whole drive; copy the raw bytes | A consumer needs replay from the lake alone |
 | Ingest passes | One chunked pass: facts and keypoints together (user decision 2026-10-25) | Bounded memory, rules see the whole sequence from the facts, and the frames file is decoded once instead of twice | Two passes: facts, then keypoints | A rule needs cloud data that the stored facts do not hold |
-| BI | Streamlit and Plotly | One Python file per view | Superset, Grafana | Non-Python users |
+| BI | Streamlit and Plotly | Python only, one function per tab that AppTest can run, no server code | Dash, Jupyter, Superset, Grafana; Altair, matplotlib | Shared dashboards for non-Python users |
 | CLI | Typer | Typed commands | argparse | None |
 | Tests | pytest and hypothesis | Property tests suit a two-way check | unittest | None |
 | Not used | Kafka, Spark, Airflow, dlt, Docker | No purpose at this scale | See "Scaling" | See "Scaling" |
@@ -348,7 +346,7 @@ whole centimetres.
 The generator is tested in both directions. Forward: scenario to frames. Back: `infer_track`
 recovers per-frame position and velocity from the frames, `fit_segments` fits move and stop
 pieces to them, and `compare_scenarios` checks the result against the original within stated
-limits. The back direction reads frames only, never ground truth.
+limits. The back direction reads frames only.
 
 Limits measured on the demo drive, from two different runs, and the limits set in
 `config/default.yaml`.
@@ -407,7 +405,7 @@ prints a `warning:` line on stderr for every segment under 32 frames
 
 `generator/faults.py` builds bad drives on purpose so Module 2 can be tested against known errors.
 `inject_faults(drive, faults, frame_interval_ns=62_500_000)` returns a new `Drive` and a dict of
-counts per error code. Only the frames table changes; the ground truth, the scenario and the
+counts per error code. Only the frames table changes; the scenario and the
 scenario hash are copied unchanged, and the input drive is not modified. A faulty drive can be
 written with `write_drive` and still passes `verify_drive`, because the manifest is built from the
 faulty file.
@@ -441,8 +439,8 @@ and one call; `streamlit run src/vl_data/generator/ui/generate_app.py`); the thr
 module. `rows_to_scenario` turns the form values and the table rows into a `Scenario` (`float()` on
 every number, stop rows lose `end_speed_cm_s`, a blank, NaN, infinite or true/false
 cell, an empty table raises a clear `ValueError`; the seed is not an input, the `Scenario`
-default 0 is used; ASSUMPTIONS A74, A80, A81). `preview_figure` plots speed (cm/s) against time (s) from `motion.speed_profile`. A wrong form or table shows
-`st.error` and no plot.
+default 0 is used; ASSUMPTIONS A74, A80, A81). `preview_figure` plots speed (cm/s) against
+time (s) from `motion.speed_profile`. A wrong form or table shows `st.error` and no plot.
 
 The Generate button runs these steps in order (ASSUMPTIONS A70 to A80):
 
@@ -481,6 +479,352 @@ with status `rejected`, and no keypoints. A folder name that is not a valid driv
 spec that does not fit the body raise `ValueError` and write nothing. Frame errors VL-001 to VL-004 and
 VL-006 send only the failed frame to quarantine. See [ERROR_CODES.md](ERROR_CODES.md).
 
+## Module 3: motion use case (built)
+
+`vl_data.sdk.VLClient(lake: Lake)` is the read-only way to the lake. `drives() -> list[str]`
+lists the drives that have keypoints. `keypoints(drive, keypoint=None)`, `motion(drive)`,
+`lineage(drive)` and `quarantine(drive)` return Arrow tables with exactly the table schema
+(no `drive` column); keypoints are ordered by `frame_id`, then keypoint name. A valid unknown
+drive gives an empty table; an invalid drive id (for example `a/b` or empty) raises
+`ValueError` from the Lake. `sql(query) -> pa.Table` runs one SELECT over the table views (which do have a `drive`
+column) and closes its DuckDB connection after every query. The SDK reads only the lake.
+
+The `motion` table (`MOTION_SCHEMA`) has one row per frame: `frame_id` int64, `timestamp_ns`
+int64, `x_cm` float64, `velocity_cm_s` float64 (null where there is no estimate),
+`acceleration_cm_s2` float64 (null likewise) and `n_points` int32 (samples in the estimator
+window).
+
+### Estimator defaults, measured (sweep)
+
+The estimator fits a least-squares polynomial of order 2 or 3 to the centroid x of the frames
+inside a window centred on each frame, on the real timestamps, and reads velocity (cm/s) and
+acceleration (cm/s^2) from the fitted coefficients (`vl_data.usecase.estimator`). The window
+length, order, minimum points and gap limit are set in `config/motion.yaml`. The values there come
+from one command, run on 2026-10-25 (measured run time 23.9 s):
+
+```
+python tools/motion_sweep.py --write-yaml
+```
+
+The sweep generates two drives in memory with a 100 cm cube of 10 points per axis: the demo
+scenario (1,000 frames) and a harder drive of 624 frames (stop 4 s; ramp 0 to 600 cm/s over 3 s,
+200 cm/s^2; cruise 6 s; reversal 600 to -600 cm/s over 3 s, 400 cm/s^2; cruise 5 s; slow to 0 over
+3 s; stop 15 s). For each frame it takes the mean x of the points (the centroid, cm) and the true
+velocity and acceleration that the tool computes from the scenario itself (`true_motion` in
+`tools/motion_sweep.py`: the speed profile, forward-Euler position and forward differences; no file
+and no lake is read). These are development measurements against that in-memory truth, not a check
+that the pipeline runs. Errors are estimate minus truth. "int" columns use interior frames (no
+change of true acceleration within half a window of the frame, the last frame excluded; the
+function `interior_mask` in the same tool); "all" columns use every frame with an estimate. The baseline row uses
+central differences of the centroid x (forward and backward at the ends) and a one-frame half
+window. For each cell `min_points` is `window // 2 + 1`, so the one-sided window at the clip ends
+still fits, and `max_gap_frames` is the config default, 4. Real output (measured):
+
+```
+Selection table: worst case over drives demo, hard, interior frames
+row                      window order min_pts interior  int vel max (cm/s)  int acc max (cm/s^2)
+window 8, order 2             8     2       5    91.2%              13.467                23.712
+window 8, order 3             8     3       5    91.2%              14.599                23.712
+window 12, order 2           12     2       7    87.3%              13.143                 8.282
+window 12, order 3           12     3       7    87.3%              13.486                 8.282
+window 16, order 2           16     2       9    83.5%              12.902                 4.378
+window 16, order 3           16     3       9    83.5%              13.515                 4.378
+window 24, order 2           24     2      13    75.8%              12.692                 1.568
+window 24, order 3           24     3      13    75.8%              12.979                 1.568
+window 32, order 2           32     2      17    68.1%              12.559                 0.653
+window 32, order 3           32     3      17    68.1%              12.784                 0.653
+window 48, order 2           48     2      25    53.2%               3.168                 0.286
+window 48, order 3           48     3      25    53.2%               3.232                 0.286
+per-frame differences         -     -       -    97.0%              19.000               452.000
+
+Drive demo: velocity in cm/s, acceleration in cm/s^2
+row                      frames int vel max int vel rms int acc max int acc rms all vel max all vel rms all acc max all acc rms
+window 8, order 2           936       4.533       1.525      23.712       5.799       6.400       1.595      65.091       7.564
+window 8, order 3           936       6.713       1.734      23.712       5.799       6.713       1.781      65.091       7.564
+window 12, order 2          908       3.701       1.485       8.282       2.047       8.967       1.673      57.031       5.927
+window 12, order 3          908       5.410       1.542       8.282       2.047       5.410       1.600      57.031       5.927
+window 16, order 2          880       3.520       1.460       4.378       1.000      11.412       1.836      55.678       6.240
+window 16, order 3          880       4.152       1.488       4.378       1.000       5.377       1.585      55.678       6.240
+window 24, order 2          824       3.278       1.418       1.568       0.350      16.271       2.404      54.568       7.299
+window 24, order 3          824       3.765       1.424       1.568       0.350       7.275       1.619      54.568       7.299
+window 32, order 2          768       3.235       1.372       0.653       0.142      20.877       3.220      52.905       8.319
+window 32, order 3          768       3.400       1.375       0.653       0.142       9.584       1.732      52.905       8.319
+window 48, order 2          656       3.168       1.244       0.286       0.047      30.263       5.365      51.928      10.086
+window 48, order 3          656       3.232       1.249       0.286       0.047      13.521       2.165      51.928      10.059
+per-frame differences       978       9.500       2.777     452.000     172.956       9.500       2.779     452.000     173.660
+
+Drive hard: velocity in cm/s, acceleration in cm/s^2
+row                      frames int vel max int vel rms int acc max int acc rms all vel max all vel rms all acc max all acc rms
+window 8, order 2           569      13.467       4.011      15.550       4.228      27.200       4.527     246.026      22.021
+window 8, order 3           569      14.599       4.056      15.550       4.228      14.599       4.313     246.026      22.021
+window 12, order 2          545      13.143       3.881       5.235       1.373      36.484       5.118     229.147      23.914
+window 12, order 3          545      13.486       3.889       5.235       1.373      18.302       4.322     229.147      23.914
+window 16, order 2          521      12.902       3.735       2.394       0.624      45.941       6.087     222.481      26.400
+window 16, order 3          521      13.515       3.741       2.394       0.624      22.348       4.420     222.481      26.400
+window 24, order 2          473      12.692       3.375       1.256       0.241      64.720       8.965     215.069      31.143
+window 24, order 3          473      12.979       3.378       1.256       0.241      30.394       4.819     215.069      31.143
+window 32, order 2          425      12.559       2.875       0.547       0.105      83.495      12.771     211.434      35.404
+window 32, order 3          425      12.784       2.875       0.547       0.105      38.252       5.511     211.434      35.404
+window 48, order 2          332       0.000       0.000       0.033       0.016     121.057      22.296     207.743      42.816
+window 48, order 3          332       0.000       0.000       0.033       0.016      53.951       7.708     207.743      42.816
+per-frame differences       605      19.000       4.424     400.000     162.934      19.000       4.517     656.000     169.026
+
+Chosen: window 16 frames, order 2, min_points 9, max_gap_frames 4
+Without the interior-fraction requirement (80%) the plain rule would choose window 48, order 2 (53.2% of frames interior in the worst drive)
+Measured worst-case interior max error, sweep drives: velocity 12.902 cm/s, acceleration 4.378 cm/s^2
+Measured worst-case interior max error, 1502 random and pinned scenarios (seed 0): velocity 8.848 cm/s, acceleration 21.212 cm/s^2
+```
+
+Selection rule. Among the window x order cells, take the lowest worst-case (larger of the two
+drives) interior acceleration max error; ties (errors equal to 6 decimals) go to the lower
+worst-case interior velocity max error, then the smaller window, then the lower order. A cell is
+eligible only if at least 80% of the frames of every drive are interior. This interior-fraction
+condition decides the result: the plain rule picks window 48, order 2 (measured 0.286 cm/s^2), but
+a 48-frame window leaves only 53.2% of the frames interior, so its small interior error hides
+large errors near every speed change (measured: all-frame acceleration max 207.7 cm/s^2 and
+velocity max 121.1 cm/s on the hard drive). Other shares give (measured, same table): 0.65 gives
+window 32, 0.7 and 0.75 give window 24, 0.8 gives window 16, 0.85 gives window 12. The 80% is a
+judgement. At window 48 the order 3 acceleration error is 0.28574749048425 and order 2 is
+0.28574749048971 (unrounded, measured): a difference of 5e-12 cm/s^2 is float round-off, so it
+is a tie, and the lower velocity error (3.168 against 3.232 cm/s) gives order 2. At the chosen
+window 16 the two orders also tie on acceleration (4.378 cm/s^2) and order 2 wins on velocity
+(12.902 against 13.515 cm/s). Without the tie rule the plain rule printed order 3 by round-off.
+
+The per-frame-difference baseline has an interior acceleration max error of 452.0 cm/s^2 (demo)
+and 400.0 cm/s^2 (hard), against 4.378 and 2.394 cm/s^2 for the chosen cell (measured):
+differencing integer-cm positions at 16 frames/s multiplies the 0.5 cm rounding by 2 x 16^2. The
+chosen cell has lower interior velocity and acceleration errors (max and RMS) and lower all-frame
+acceleration errors than the baseline on both drives (tests). It does not have a lower all-frame
+velocity max error: 11.4 against 9.5 cm/s (demo) and 45.9 against 19.0 cm/s (hard), because the
+16-frame fit smooths across speed changes and the clip ends (measured).
+
+Random-scenario search. The sweep drives start and end at rest, so they never test slow motion
+(where the integer-cm rounding of the centroid is a staircase) or a clip that ends while moving
+(the first and last 8 frames use a one-sided window). The tool therefore also measures the chosen
+cell on a seeded random-scenario search (`--random-search N`, default 1,500, `--seed`, default 0).
+It draws N scenarios with numpy's RNG (up to 5 legs of 48 to 96 frames, end speeds up to 400 cm/s)
+and always adds two pinned scenarios, the counterexamples the Hypothesis test found: one 48-frame
+move from 0 to 2 cm/s (interior acceleration max error 12.909 cm/s^2) and five 96-frame moves
+towards -68 cm/s (19.530 cm/s^2); the sweep drives alone would give only 4.378 cm/s^2. Measured
+over the 1,502 scenarios of the run above (seed 0): worst interior velocity 8.848 cm/s and
+acceleration 21.212 cm/s^2. Other seeds, 1,500 scenarios each (measured on 2026-10-25): seed 1 gives
+9.806 cm/s and 25.364 cm/s^2, seed 2 gives 10.669 and 19.818, seed 3 gives 12.381 and 19.896. The
+velocity error of about 12.5 cm/s on the hard drive is the forward-difference truth against the
+centred fit, a/32 for a = 400 cm/s^2 (assumption M3-A17). The pipeline does not use these numbers
+as limits; `tests/usecase/test_estimator.py` keeps them as regression bounds (velocity 19.4 cm/s,
+acceleration 31.9 cm/s^2, 1.5 times the largest measured value, rounded up to 0.1), so a change to
+the estimator that makes it worse fails a test.
+
+Full-density check (measured on 2026-10-27, 300 frames, the same command run again after the
+evaluation was removed; the block is an excerpt of the command output):
+
+```
+python tools/motion_sweep.py --full-density-check 300
+Full-density check: 300 frames at 100 points per axis, 248 interior, 0 null
+                       int vel max int vel rms int acc max int acc rms
+full density                 6.549       2.990       4.681       1.081
+10 points per axis           6.549       2.990       4.681       1.081
+Largest centroid x difference, full vs small lattice: 0.000000 cm
+Interior position error (full density): 0.4844 cm max
+Units: velocity cm/s, acceleration cm/s^2.
+```
+
+The 300 frames were generated at 100 points per axis with `generate_to_disk`, ingested into a temp
+lake, run through `compute_motion`, the stored motion table compared with the in-memory truth, and
+the temp folders deleted. In this
+one run the interior errors match the small-lattice run of the same scenario to every printed
+digit and the centroid x values are identical (measured once on 300 frames). A unit test checks
+the identity behind it, centroid x = 49.5 + rint(x) for 2, 10 and 100 points per axis, on single
+frames. The whole command (sweep, random search and this check) took 99 s (measured on
+2026-10-27). The tool limits N to 600 frames, prints the estimated
+size (12 MB per frame) and refuses to start when free disk space is under twice that estimate.
+
+### Data flow
+
+```
+raw drive folder --ingest--> lake: keypoints, quarantine, lineage
+lake keypoints (centroid rows) --motion--> lake: motion
+VLClient.sql / keypoints / motion  <-- read the lake
+```
+
+`motion <drive_id>` reads the drive's lineage row (it must exist, be the only one, and have status
+`ok`) and its centroid keypoint rows through `VLClient`, fits the sliding window on the real
+timestamps, and replaces the drive's motion partition in one swap. It never opens the raw drive.
+
+### Command line (built)
+
+```powershell
+python -m vl_data motion <drive_id> [--lake-dir DIR]
+```
+
+The lake folder is `--lake-dir`, else `VL_LAKE_DIR`, else `lake_dir` in `config/etl.yaml`, else
+`warehouse` (the same resolution as `ingest`, through `load_etl_config()`). The window and order
+come from `config/motion.yaml`. Exit codes follow `ingest`: 0 done, 1 refused or failed
+(`MotionError`, or any other unexpected failure), 2 usage or
+configuration error (including a lake folder that does not exist), 3 a file could not be read or
+written. The named failures are in `docs/USE_CASE_ERRORS.md`.
+
+Real output of the full-density run (measured on 2026-10-25: the demo scenario, 1,000 frames x
+1,000,000 points, `generate` 79 s, `ingest` 56 s wall-clock):
+
+```
+> python -m vl_data motion bf394b9bfb42 --lake-dir <work>/lake        (exit 0, 1 s)
+drive: bf394b9bfb42
+frames_read: 1000 frames
+frames_estimated: 1000 frames
+frames_null: 0 frames (velocity or acceleration is null)
+```
+
+A second `motion` run left the motion partition file byte-identical (sha256
+`fdab85419d40c367dc6486db5c5b4951a68d5e2cb6d12f3f29a2b9ce96b796e0` both times, measured). The full
+suite on 2026-10-27, after the evaluation and the ground truth were removed and origin/main was merged: 798 passed, 4 skipped in 77 s (measured).
+The run-proof log is local and git-ignored: `.claude/run-proofs/M3-TASK-7-iter1.log`.
+
+### Technology reasons and alternatives
+
+- Estimator: a least-squares sliding window on the real timestamps. Alternatives considered:
+  per-frame differences (built and measured as the baseline above: interior acceleration max
+  error 452.0 and 400.0 cm/s^2); Savitzky-Golay (needs evenly spaced samples, so dropped frames
+  would need resampling, and adds the scipy dependency); a Kalman or RTS smoother (more complex,
+  needs a motion model and noise tuning; considered for a later version). The window fit needs
+  numpy only and uses the timestamps, so a dropped frame is a gap, not a shifted sample.
+- Storage and queries: Parquet files in the lake, read through DuckDB. Alternatives: SQLite or
+  Postgres (a server or a schema migration to run, and no file hash or folder swap per drive);
+  the SDK also returns Arrow tables. Pandas DataFrames were the alternative to Arrow tables: they
+  have no exact column types and no real nulls (a missing integer becomes a float NaN).
+
+## Module 4: BI app (built)
+
+One Streamlit app (Streamlit turns a Python script into a web page) with four tabs: Generate,
+Clean, Analyze and SQL. The first three are in the
+design; the SQL tab is a user decision of 2026-10-26, added so a user can ask the lake their own
+question. A sidebar selector, "Drive", picks a drive from the lake, and every tab shows the
+scenario hash of that drive as a badge. The package is `vl_data.bi`. It uses `VLClient` and
+`render_generate_tab` as they are, writes nothing to the lake and edits no
+Module 1, 2 or 3 file. Module 4 adds no error codes: the Clean tab shows the existing VL-001 to
+VL-006 and the drive-level code `INTEGRITY` from `docs/ERROR_CODES.md`.
+
+### Data flow
+
+```
+Lake --> VLClient (keypoints, motion, lineage, quarantine, sql) --> bi/data.py
+                                                                       |
+                                                                  bi/figures.py
+                                                                       |
+        clean_tab.py   analyze_tab.py   sql_tab.py   render_generate_tab (Module 1)
+                                   \         |          /
+                                          shell.py  (sidebar, four tabs, badges)
+                                             |
+                                          app.py  (page setup, configuration)
+```
+
+`bi/data.py` has no Streamlit code: it lists the drives, reads the quality of a drive, builds the
+`ingest` and `motion` commands, gives the hint for a drive with no stored motion (`motion_hint`),
+runs a query and builds the example queries. `bi/figures.py` makes the Plotly figures (Plotly is a Python charting library with hover and zoom). Each tab is one
+function that draws into the page and never raises; a failure is shown with `st.error` or
+`st.info`, not as a traceback. `shell.py` draws the sidebar and the tabs, and `app.py` is the file
+that `streamlit run` starts.
+
+### Tabs
+
+- Generate: the existing `render_generate_tab(config)`, unchanged. Its badge shows the scenario
+  hash of the drive selected in the sidebar, not the hash of the form the user is editing.
+- Clean (read-only): for the selected drive, the counts expected, in, kept, rejected and missing
+  (frames) and the keypoint rows (rows); a bar chart of frames kept, rejected and missing; a bar
+  chart of quarantine rows per error code; and the quarantine table, which shows at most 200 rows
+  and states the full count. A drive with no lineage row is not ingested: the tab prints the
+  exact `ingest` command for the raw folder and the lake, and does not run it.
+- Analyze: only the stored motion: three charts (centroid x in cm, velocity in cm/s,
+  acceleration in cm/s^2, against time in s), drawn with no click and no raw folder. The
+  centroid x is the raw centroid, not corrected. When the drive has no stored motion the tab
+  shows a message and the exact command: an ingested drive with status ok gets the `motion`
+  command; a drive that is not ingested, or was rejected, gets the `ingest` command; a drive with
+  more than one lineage row gets a problem text and no command (from reading `motion_hint` in
+  `bi/data.py`, not run). The tab never reads ground truth.
+- SQL: a dropdown of five example queries fills a text box; Run sends the text to
+  `VLClient.sql` (it runs the text with DuckDB, an embedded SQL engine), which accepts one SELECT over the views `keypoints`, `quarantine`, `lineage` and
+  `motion`. The result table shows at most 10,000 rows and states the total. A non-SELECT, a
+  second statement or a bad query shows a one-line message.
+
+### Command line
+
+```powershell
+python -m streamlit run src/vl_data/bi/app.py --server.address 127.0.0.1 --server.headless true --browser.gatherUsageStats false
+```
+
+`--server.address 127.0.0.1` makes the app listen on this computer only. Without it, a server may
+listen on all network interfaces, which means that any computer that can reach yours over the
+network could open the page, including the SQL tab, which has no login. Do not start the app with
+`--server.address 0.0.0.0` (all interfaces) or behind a port forward (a router or tunnel setting
+that passes outside traffic to your computer).
+
+Run it from the repository root. The lake folder comes from `VL_LAKE_DIR`, else `config/etl.yaml`,
+else `warehouse`; the raw folder comes from `VL_RAW_DIR`, else `raw_dir` in
+`config/default.yaml` (`data/raw`). The defaults are relative to the current folder, so start the
+app from the folder that holds `warehouse` and `data/raw`. The configuration files themselves are
+found by file path, not by the current folder.
+
+### Technology reasons and alternatives
+
+These are reasons from design, not measurements.
+
+- Streamlit: Python only, so the app uses the same typed SDK and the same functions as the
+  command line. A tab is a function, which Streamlit's test runner (AppTest) can run without a
+  browser. There is no server code to write. Alternative: Dash, which needs callbacks and a layout
+  tree for the same screens.
+- Grafana and Superset: they need a server, a database connection and configuration, and they
+  suit shared dashboards for non-Python users. They would not call the SDK
+  directly, so the stored motion would need a separate service. Jupyter is a good place to analyse, but a notebook is not a shipped interface.
+- Plotly: hover and zoom come with `st.plotly_chart`. Altair is declarative but
+  gives less control over gaps; matplotlib is static.
+- No web service: the app reads the lake in-process through the SDK. A REST API is listed as
+  coming soon.
+
+### What changed from the first plan
+
+`ingest_command` and `render_clean_tab` take the lake folder as an argument. The Analyze tab uses
+`config.raw_dir` only to print the `ingest` command. `read_problem` is a public helper in `bi/data.py` that the
+other files share (it turns an exception into a short message without a file path).
+
+The ground-truth evaluation (an Evaluate button, PASS or FAIL, metrics, estimate-against-truth
+charts) was part of the first Module 4 build and was removed on 2026-10-26 by user decision; the
+exercise does not require it. `render_analyze_tab(client, config, lake_dir, drive)` and
+`render_app(config, lake_dir)` lost the motion-config argument, and the app no longer loads
+`config/motion.yaml`.
+
+### What is proven by what
+
+The tabs are tested with AppTest on a small drive (a 100 cm cube of 10 points per axis); on
+2026-10-26 the 100 tests in `tests/bi` passed with 100% statement coverage of `vl_data.bi` (319
+statements, 0 missed), and the full suite gave 958 passed, 4 skipped (all measured). A live
+Streamlit server was started by a script (`.claude/run-proofs/module4_server_check.py`, local,
+git-ignored) after the evaluation was removed: the health endpoint, the page and the server's own
+run of `app.py` answered, and the server log had no exception (`SERVER_CHECK: PASS`, 8.4 s
+measured on 2026-10-26; log `.claude/run-proofs/M4RM-server.log`). That proves the app starts and is served, not what a browser
+draws and not any click.
+
+### Limits of Module 4
+
+These come from reading the source and the tests, not from a measurement, unless a number says
+measured. The full list for users is in the release notes under Known issues.
+
+- The SQL tab runs any single SELECT through `VLClient.sql`, which can also read any file path
+  on the machine through `read_parquet` (a DuckDB function that reads a Parquet file from any
+  path). The app is a local single-user tool, and that premise depends on the address 127.0.0.1
+  (this computer only): the app must not be started with `--server.address 0.0.0.0` or behind a
+  port forward, because the SQL tab has no login. Production would use a locked connection
+  (external access off, extension autoload off, a memory limit; autoload means DuckDB loads an
+  add-on such as `httpfs` by itself when a query needs it). A query could also read environment
+  variables with `getenv` (a DuckDB function) or open a Windows UNC path (a network-share path),
+  which can send a login hash to that share; this was read from the DuckDB defaults and was not
+  run. A follow-up is written: `module4-TASK-4-1.md` in `.claude/plans/followups/`.
+- Display caps: 10,000 rows in the SQL tab (the whole result is loaded first, so the cap limits
+  what is shown, not memory) and 200 quarantine rows in the Clean tab.
+- The Generate-tab badge shows the hash of the drive selected in the sidebar, not the scenario in
+  the form.
+- A Plotly trace holds one point per frame, up to the 2,000-frame cap of a scenario; larger
+  drives were not tried.
+
 ## Storage math
 
 A full-density frame is 100 x 100 x 100 = 1,000,000 points. At 3 coordinates of 4 bytes each
@@ -505,6 +849,13 @@ partitioning and compaction, and scheduled runs with an orchestrator.
   what "not atomic" means above). Re-ingesting repairs a crash.
 - The speed limit of 9,000 cm/s is a Tesla's top speed (322 km/h, 8,944 cm/s) rounded up. A
   faster vehicle would be flagged as impossible motion.
-- Tolerances come from one demo drive and may widen when the property tests run.
+- The measured errors come from two sweep drives and a random-scenario search (see the sweep section)
+  and may widen when other scenarios are tried; the sweep drives start and end at rest.
+- SQL tab (Module 4): it runs any single SELECT through `VLClient.sql`, which can also read any
+  file path on the machine through `read_parquet`. This is a local single-user tool, and that
+  premise depends on the address 127.0.0.1: do not start the app with `--server.address 0.0.0.0`
+  or behind a port forward, because the SQL tab has no login. The production
+  fix is a locked connection (external access off, extension autoload off, a memory limit). Other
+  limits of Module 4 are in "Limits of Module 4" above.
 
 The full assumption list is in [ASSUMPTIONS.md](ASSUMPTIONS.md).

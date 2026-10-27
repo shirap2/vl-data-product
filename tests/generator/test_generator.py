@@ -1,7 +1,5 @@
 """Tests for drive generation and writing. Units: cm, s, ns."""
 
-import os
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +8,7 @@ import pytest
 from vl_data.core.config import Config
 from vl_data.core.hashing import file_sha256, scenario_hash
 from vl_data.core.manifest import MANIFEST_NAME, read_manifest, verify_drive
-from vl_data.core.schemas import FRAMES_SCHEMA, GROUND_TRUTH_SCHEMA
+from vl_data.core.schemas import FRAMES_SCHEMA
 from vl_data.generator import (
     Drive,
     drive_dir_name,
@@ -22,27 +20,6 @@ from vl_data.generator.models import Scenario, load_scenario
 
 DEMO = Path(__file__).resolve().parents[2] / "src/vl_data/generator/scenarios/demo.yaml"
 SPACING_NS = 62_500_000  # ns between frames at 16 fps
-
-_GT_READS: list[str] = []  # names of ground_truth files opened for reading while the hook is on
-_HOOK = {"on": False}
-
-
-def _gt_audit_hook(event: str, args: tuple[Any, ...]) -> None:
-    """Record 'open' events that read a file named exactly 'ground_truth.parquet'."""
-    if not _HOOK["on"] or event != "open":
-        return
-    try:
-        name = os.path.basename(os.fsdecode(args[0]))
-    except (TypeError, ValueError):
-        return  # a file descriptor, not a path
-    mode = args[1] if isinstance(args[1], str) else "r"
-    writes = any(c in mode for c in "wxa+")
-    if name == "ground_truth.parquet" and not writes:
-        _GT_READS.append(name)
-
-
-# The hook cannot be removed for the rest of the session; the _HOOK["on"] flag switches it off.
-sys.addaudithook(_gt_audit_hook)
 
 
 @pytest.fixture(scope="module")
@@ -75,15 +52,12 @@ def test_frame_timestamps_exact(drive: Drive, scenario: Scenario, config: Config
     assert frames.column("frame_id").to_pylist() == list(range(1000))
     assert ts == [i * SPACING_NS for i in range(1000)]
     assert {len(p) for p in frames.column("points").to_pylist()} == {1000 * 12}
-    assert drive.ground_truth.num_rows == 1000
-    assert drive.ground_truth.column("timestamp_ns").to_pylist() == ts
     assert drive.scenario_hash == scenario_hash(scenario, config.body)
 
 
-def test_tables_use_shared_schemas(drive: Drive) -> None:
-    """Both tables carry the shared Arrow schemas."""
+def test_frames_use_the_shared_schema(drive: Drive) -> None:
+    """The frames table carries the shared Arrow schema."""
     assert drive.frames.schema.equals(FRAMES_SCHEMA)
-    assert drive.ground_truth.schema.equals(GROUND_TRUTH_SCHEMA)
 
 
 def test_same_scenario_same_bytes(scenario: Scenario, config: Config, tmp_path: Path) -> None:
@@ -91,7 +65,7 @@ def test_same_scenario_same_bytes(scenario: Scenario, config: Config, tmp_path: 
     a = generate_to_disk(scenario, config, tmp_path / "a")
     b = generate_to_disk(scenario, config, tmp_path / "b")
     assert _hashes(a) == _hashes(b)
-    assert set(_hashes(a)) == {"frames.parquet", "ground_truth.parquet", MANIFEST_NAME}
+    assert set(_hashes(a)) == {"frames.parquet", MANIFEST_NAME}
 
 
 def test_folder_is_hash12(drive: Drive, config: Config, tmp_path: Path) -> None:
@@ -167,47 +141,30 @@ def test_generate_to_disk_raises_when_verify_fails(
         generate_to_disk(scenario, config, tmp_path)
 
 
-def test_audit_hook_sees_reads(tmp_path: Path) -> None:
-    """Positive control: the hook records a read of a file named ground_truth.parquet."""
-    dummy = tmp_path / "ground_truth.parquet"
-    dummy.write_bytes(b"x")
-    _GT_READS.clear()
-    _HOOK["on"] = True
-    try:
-        dummy.read_bytes()
-    finally:
-        _HOOK["on"] = False
-    assert _GT_READS == ["ground_truth.parquet"]
+def test_a_drive_holds_exactly_the_frames_and_the_manifest(
+    scenario: Scenario, config: Config, drive: Drive, tmp_path: Path
+) -> None:
+    """Both write paths write two files and no ground truth, and the folder verifies."""
+    streamed = generate_to_disk(scenario, config, tmp_path / "streamed")
+    in_memory = write_drive(drive, tmp_path / "memory", config)
+    for path in (streamed, in_memory):
+        assert sorted(p.name for p in path.iterdir()) == ["frames.parquet", MANIFEST_NAME]
+        assert sorted(read_manifest(path).files) == ["frames.parquet"]
+        assert verify_drive(path).ok
 
 
-def test_generator_ignores_ground_truth_file(
+def test_rewriting_replaces_a_folder_that_still_holds_an_old_ground_truth_file(
     scenario: Scenario, config: Config, tmp_path: Path
 ) -> None:
-    """No Python-level open of a file named exactly ground_truth.parquet for reading in generate().
-
-    C-level reads are not seen by the audit hook. Frames are also byte-equal with and without
-    an older ground_truth.parquet present. write_drive only writes that file; build_manifest
-    and verify_drive read it to hash it, so the hook covers generate() only.
-    """
-    old = generate_to_disk(scenario, config, tmp_path / "old")
-    assert (old / "ground_truth.parquet").is_file()
-    with_gt = (old / "frames.parquet").read_bytes()
-
-    (old / "ground_truth.parquet").unlink()
-    _GT_READS.clear()
-    _HOOK["on"] = True
-    try:
-        regenerated = generate(scenario, config)
-        assert _GT_READS == []
-    finally:
-        _HOOK["on"] = False
-    assert not (old / "ground_truth.parquet").exists()
-    # a different folder, with the older ground_truth.parquet gone, gives the same frames
-    fresh = write_drive(regenerated, tmp_path / "fresh", config)
-    assert (fresh / "frames.parquet").read_bytes() == with_gt
-    # rewriting into the folder that still holds an older ground_truth.parquet changes nothing
-    again = write_drive(regenerated, tmp_path / "fresh", config)
-    assert (again / "frames.parquet").read_bytes() == with_gt
+    """A folder from an older version, with its ground_truth.parquet, is replaced as a whole."""
+    old = generate_to_disk(scenario, config, tmp_path)
+    frames_before = (old / "frames.parquet").read_bytes()
+    (old / "ground_truth.parquet").write_bytes(b"left over from an older version")
+    again = generate_to_disk(scenario, config, tmp_path)
+    assert again == old
+    assert not (again / "ground_truth.parquet").exists()
+    assert (again / "frames.parquet").read_bytes() == frames_before
+    assert verify_drive(again).ok
 
 
 def test_failed_swap_and_failed_restore_keep_old_drive(

@@ -8,7 +8,6 @@ from typing import Any
 
 import numpy as np
 import pytest
-import yaml
 from streamlit.testing.v1 import AppTest
 from typer.testing import CliRunner
 
@@ -122,7 +121,6 @@ def test_rows_to_scenario_accepts_numpy_numbers() -> None:
     ]
     start = {k: np.float64(v) for k, v in START.items()}
     scenario = rows_to_scenario(start, rows)
-    assert scenario.seed == 0
     assert type(scenario.start.x_cm) is float
     assert type(scenario.segments[0].duration_s) is float
 
@@ -132,7 +130,6 @@ def test_tab_has_no_seed_widget(small_config: Config, tmp_path: Path) -> None:
     at = _run(_small(small_config, tmp_path))
     assert not at.exception
     assert len(at.number_input) == 4
-    assert all("seed" not in str(n.label).lower() for n in at.number_input)
     assert "seed" not in " ".join(str(el.value) for el in at.markdown).lower()
     assert len(at.text_input) == 0
     assert len(at.slider) == 0
@@ -140,33 +137,6 @@ def test_tab_has_no_seed_widget(small_config: Config, tmp_path: Path) -> None:
     assert len(at.selectbox) == 0
     for kind in ("text_area", "radio", "multiselect", "date_input", "number_input", "button"):
         assert all("seed" not in str(getattr(w, "label", "")).lower() for w in at.get(kind))
-
-
-def test_scenario_without_seed_defaults_to_zero_and_same_hash(
-    small_config: Config, tmp_path: Path
-) -> None:
-    """A file with no seed loads with seed 0 and hashes like the same file with `seed: 0`."""
-    body = (
-        "start: {x_cm: 0.0, y_cm: 0.0, z_cm: 0.0, speed_cm_s: 0.0}\n"
-        "segments:\n"
-        "  - {type: stop, duration_s: 2.0}\n"
-    )
-    without = tmp_path / "without.yaml"
-    with_zero = tmp_path / "with_zero.yaml"
-    without.write_text(body, encoding="utf-8")
-    with_zero.write_text("seed: 0\n" + body, encoding="utf-8")
-    a, b = load_scenario(without), load_scenario(with_zero)
-    assert a.seed == 0
-    assert b.seed == 0
-    assert scenario_hash(a, small_config.body) == scenario_hash(b, small_config.body)
-
-
-def test_demo_yaml_has_no_seed_key_and_golden_hash_unchanged() -> None:
-    """demo.yaml has no seed key and its hash prefix stays bf394b9bfb42 (seed 0 by default)."""
-    assert "seed" not in yaml.safe_load(DEMO.read_text(encoding="utf-8"))
-    demo = load_scenario(DEMO)
-    assert demo.seed == 0
-    assert scenario_hash(demo, Config().body).startswith("bf394b9bfb42")
 
 
 def test_preview_figure_values(small_config: Config) -> None:

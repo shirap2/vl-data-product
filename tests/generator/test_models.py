@@ -4,9 +4,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 import vl_data.generator
+from vl_data.core.config import Config
 from vl_data.core.hashing import scenario_hash
 from vl_data.generator.models import (
     FRAMES_PER_SECOND,
@@ -225,3 +227,30 @@ def test_negative_zero_is_zero() -> None:
         start={"speed_cm_s": 5.0},
     )
     assert len(sc.segments) == 2
+
+
+def test_scenario_without_seed_defaults_to_zero_and_same_hash(
+    small_config: Config, tmp_path: Path
+) -> None:
+    """A file with no seed loads with seed 0 and hashes like the same file with `seed: 0`."""
+    body = (
+        "start: {x_cm: 0.0, y_cm: 0.0, z_cm: 0.0, speed_cm_s: 0.0}\n"
+        "segments:\n"
+        "  - {type: stop, duration_s: 2.0}\n"
+    )
+    without = tmp_path / "without.yaml"
+    with_zero = tmp_path / "with_zero.yaml"
+    without.write_text(body, encoding="utf-8")
+    with_zero.write_text("seed: 0\n" + body, encoding="utf-8")
+    a, b = load_scenario(without), load_scenario(with_zero)
+    assert a.seed == 0
+    assert b.seed == 0
+    assert scenario_hash(a, small_config.body) == scenario_hash(b, small_config.body)
+
+
+def test_demo_yaml_has_no_seed_key_and_golden_hash_unchanged() -> None:
+    """demo.yaml has no seed key and its hash prefix stays bf394b9bfb42 (seed 0 by default)."""
+    assert "seed" not in yaml.safe_load(DEMO.read_text(encoding="utf-8"))
+    demo = load_scenario(DEMO)
+    assert demo.seed == 0
+    assert scenario_hash(demo, Config().body).startswith("bf394b9bfb42")

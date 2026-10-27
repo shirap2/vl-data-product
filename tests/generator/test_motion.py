@@ -10,7 +10,6 @@ import vl_data.generator
 from vl_data.generator.models import Scenario, Start, StopSegment, load_scenario
 from vl_data.generator.motion import (
     frame_count,
-    ground_truth_arrays,
     integrate_position,
     speed_profile,
 )
@@ -122,30 +121,20 @@ def test_demo_integrated_position_and_total_distance() -> None:
     assert x2[-1] == pytest.approx(6550.0, abs=1e-9)
 
 
-def test_ground_truth_matches_forward_difference() -> None:
+def test_demo_speed_and_position_hand_values() -> None:
     sc = load_scenario(DEMO)
     v = speed_profile(sc, FPS)
     x = integrate_position(0.0, v, FPS)
-    vel, acc = ground_truth_arrays(x, v, FPS)
-    assert vel.shape == acc.shape == (1000,)
-    assert vel[-1] == vel[-2]
-    assert acc[-1] == acc[-2]
-    # velocity of Euler positions equals the speed profile itself
-    np.testing.assert_allclose(vel[:-1], v[:-1], atol=1e-9)
-    # hand values: ramp slope in move 1 is 6.25 cm/s per frame * 16 = 100 cm/s^2
-    assert acc[40] == pytest.approx(100.0)
+    assert v.shape == x.shape == (1000,)
+    # the velocity of Euler positions equals the speed profile itself
+    np.testing.assert_allclose(np.diff(x) * FPS, v[:-1], atol=1e-9)
+    # the speed changes by 6.25 cm/s per frame in move 1, so 100 cm/s^2
+    slope = np.diff(v) * FPS  # cm/s^2
+    assert slope[40] == pytest.approx(100.0)
     # move 3 slope: -6.25 * 16 = -100
-    assert acc[300] == pytest.approx(-100.0)
+    assert slope[300] == pytest.approx(-100.0)
     # flat part and stop
-    assert acc[200] == pytest.approx(0.0) and acc[900] == 0.0
-
-
-def test_ground_truth_edge_cases() -> None:
-    vel, acc = ground_truth_arrays(np.array([5.0]), np.array([7.0]), FPS)
-    assert vel.tolist() == [7.0] and acc.tolist() == [0.0]
-    vel, acc = ground_truth_arrays(np.array([0.0, 1.0]), np.array([16.0, 32.0]), FPS)
-    assert vel.tolist() == [16.0, 16.0]
-    assert acc.tolist() == [256.0, 256.0]  # (32-16)*16, repeated
+    assert slope[200] == pytest.approx(0.0) and slope[900] == 0.0
 
 
 def test_frame_count_rejects_unvalidated_non_finite_duration() -> None:
