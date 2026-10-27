@@ -1,8 +1,5 @@
 # Release notes: version 0.1.0
 
-Detail, measurements and the full list of known issues:
-[extras/RELEASE_NOTES_DETAILED.md](extras/RELEASE_NOTES_DETAILED.md).
-
 ## Product description
 
 A data product for a vehicle-location signal. It generates a mock drive (a 1 m cube moving in a

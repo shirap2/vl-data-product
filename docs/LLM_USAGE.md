@@ -24,7 +24,6 @@ Written by hand. The full log of 162 prompts is not included: this file keeps th
     evaluation removed from all four modules (26 Oct).
   - Hid the seed from the Generate tab (it stays in the hash), and added an SQL tab to the app.
   - Chose a read-only Python SDK plus SQL over a web service.
-  - Full list of assumptions: [ASSUMPTIONS.md](extras/ASSUMPTIONS.md).
 
 ## Main prompts
 

@@ -58,7 +58,7 @@ _GENERATOR = """\
 The generator itself rejects a scenario instead of writing a bad drive: a duration that is not
 a whole number of frames, a move whose start and end speed are both 0, a scenario of more than
 2,000 frames (`MAX_FRAMES` in `generator.models`), or a stop segment while the vehicle is not at
-rest (a stop needs speed 0; ASSUMPTIONS A40).
+rest (a stop needs speed 0).
 """
 
 

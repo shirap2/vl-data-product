@@ -23,3 +23,7 @@ docs/*.md
 .claude/clean-code/
 .claude/run-proofs/
 .hypothesis/
+
+# Detailed notes kept locally; only the engineering report is submitted
+docs/extras/*
+!docs/extras/ENGINEERING_REPORT.pdf

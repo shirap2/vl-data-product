@@ -3,7 +3,6 @@
 A small end-to-end data product for a vehicle-location (VL) signal: a mock data source, an ETL,
 a queryable warehouse (the "lake") and a BI app. The implemented use case is ego motion: velocity
 and acceleration of the vehicle, computed from its point cloud alone. All data is synthetic.
-More detail: [extras/ARCHITECTURE_DETAILED.md](extras/ARCHITECTURE_DETAILED.md).
 
 ## Flow
 
