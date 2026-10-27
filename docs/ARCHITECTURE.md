@@ -189,11 +189,10 @@ demo drive `bf394b9bfb42`, 1,000 frames of 1,000,000 points, row groups of 50 fr
 first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB
 (log `.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and
 1,718 MiB (`.claude/run-proofs/TASK-4-measure.log`). One first run in
-`.claude/run-proofs/TASK-4-measure-iter2.log` took 3,730 s (its re-ingest took 44.5 s); CPU time
-was only about 54 s while it ran. The cause is unknown and it was not reproduced in two later runs,
-so it is an open outlier: the next full-density run should log free memory and disk. A frame scan
-of 91 s and 1.59 GiB before a speed-up was measured once in a session; the output was not saved to
-a log. These are single measurements, not a benchmark suite.
+`.claude/run-proofs/TASK-4-measure-iter2.log` took 3,730 s (its re-ingest took 44.5 s). The cause
+is unknown and it was not reproduced in two later runs, so it is an open outlier: the next
+full-density run should log free memory and disk. These are single measurements, not a benchmark
+suite.
 
 A drive folder is treated as hostile input. Before anything large is allocated: the manifest's points
 per frame must not exceed `max_points_per_frame` (2,000,000 points); the lattice is built only after

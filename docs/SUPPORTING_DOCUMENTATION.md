@@ -257,11 +257,10 @@ demo drive `bf394b9bfb42`, 1,000 frames of 1,000,000 points, row groups of 50 fr
 first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB
 (log `.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and
 1,718 MiB (`.claude/run-proofs/TASK-4-measure.log`). One first run in
-`.claude/run-proofs/TASK-4-measure-iter2.log` took 3,730 s (its re-ingest took 44.5 s); CPU time
-was only about 54 s while it ran. The cause is unknown and it was not reproduced in two later runs,
-so it is an open outlier: the next full-density run should log free memory and disk. A frame scan
-of 91 s and 1.59 GiB before a speed-up was measured once in a session; the output was not saved to
-a log. These are single measurements, not a benchmark suite.
+`.claude/run-proofs/TASK-4-measure-iter2.log` took 3,730 s (its re-ingest took 44.5 s). The cause
+is unknown and it was not reproduced in two later runs, so it is an open outlier: the next
+full-density run should log free memory and disk. These are single measurements, not a benchmark
+suite.
 
 A drive folder is treated as hostile input. Before anything large is allocated: the manifest's points
 per frame must not exceed `max_points_per_frame` (2,000,000 points); the lattice is built only after
@@ -1292,7 +1291,7 @@ covers. The page was not opened in a browser by hand, and the full-density demo 
 - The lake is single-writer: load one drive at a time. A failed partition restore leaves the old
   data in `_swap/old-<id>` for you to recover by hand; it is never deleted automatically.
 - The loader reads the frames file from disk twice: `verify_drive` hashes it once, then the scan reads it once more, in chunks (any other file in the manifest is hashed once and never parsed). It is built for one machine, not for a stream. Measured peak memory was about 1.7 to 1.9 GiB at full density, while one Parquet row group is about 600 MB uncompressed (50 frames); the chunk size does not bound it. A drive with a row group above 2,048 MiB (`max_row_group_mib`) is rejected.
-- Measured on 2026-10-25 (one machine, demo drive `bf394b9bfb42`, 1,000 frames x 1,000,000 points, row groups of 50 frames): the latest run took 44.7 s for the first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB (`.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and 1,718 MiB (`TASK-4-measure.log`). One first run (`TASK-4-measure-iter2.log`) took 3,730 s while its CPU time was only about 54 s; the cause is unknown and it was not reproduced, so it is an open outlier (the next full-density run should log free memory and disk). A frame scan of 91 s and 1.59 GiB before a speed-up was measured once in a session; the output was not saved to a log.
+- Measured on 2026-10-25 (one machine, demo drive `bf394b9bfb42`, 1,000 frames x 1,000,000 points, row groups of 50 frames): the latest run took 44.7 s for the first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB (`.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and 1,718 MiB (`TASK-4-measure.log`). One first run (`TASK-4-measure-iter2.log`) took 3,730 s; the cause is unknown and it was not reproduced, so it is an open outlier (the next full-density run should log free memory and disk).
 - A drive folder is treated as hostile: a manifest above 2,000,000 points per frame (`max_points_per_frame`), a Parquet footer claiming more than 2 x expected frames + 1,000 rows, or a malformed `scenario_hash` is rejected with `INTEGRITY` before anything large is allocated, and at most 20 problems (plus one "and K more" row) are stored per drive. The row-group size check trusts the footer, so a compression bomb is a known gap.
 - `frames_rejected` counts quarantine rows that name a file row, so a frame that breaks two rules counts twice; `frames_in` is not always `frames_kept + frames_rejected`. The ingest assumes the drive folder does not change while it runs.
 - A drive whose frames file cannot be read, whose manifest cannot be read, or whose folder name is not its scenario hash is rejected with the code `INTEGRITY`, not with one of the six VL codes.
