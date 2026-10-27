@@ -530,7 +530,7 @@ The assignment asks for supporting documentation: the list of error codes, the a
 | Supporting documentation: the list of possible error codes | Error codes (below) |
 | Supporting documentation: architecture and design | Overview, the four module tabs, and Architecture and design (below) |
 | Supporting documentation: release notes with product description, usage example, known issues and coming soon | Release notes (below) |
-| LLM usage: the model, the main prompts and the approach | A separate document, docs/LLM_USAGE.md, kept out of git on purpose and sent with the submission. It is not part of this report. |
+| LLM usage: the model, the main prompts and the approach | A separate document, docs/LLM_USAGE.md (model, approach and the main prompts). It is not part of this report. |
 
 ## Use cases
 

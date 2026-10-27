@@ -7,7 +7,6 @@ data/
 __pycache__/
 .claude/llm-usage/
 .claude/worktrees/
-docs/LLM_USAGE.md
 tools/llm_usage.py
 .claude/settings.json
 docs/*.md
@@ -19,6 +18,7 @@ docs/*.md
 !docs/USE_CASE_ERRORS.md
 !docs/SUPPORTING_DOCUMENTATION.md
 !docs/ENGINEERING_REPORT.md
+!docs/LLM_USAGE.md
 .coverage
 .claude/clean-code/
 .claude/run-proofs/
