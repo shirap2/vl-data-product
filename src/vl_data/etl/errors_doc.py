@@ -35,10 +35,17 @@ The drive's keypoints are removed. The causes are:
 - Points per frame above `max_points_per_frame`.
 - An invalid body or scenario in the manifest.
 - Hash or size problems found by the manifest check: a changed, missing or extra file.
+- A drive that cannot be verified: an OSError, ValueError, RecursionError or MemoryError while
+  the files are hashed ("cannot verify the drive").
+- A body that cannot be turned into the lattice ("cannot build the lattice").
 - An unreadable or implausible frames file: not Parquet, a footer that claims too many rows, or a
   row group above `max_row_group_mib`.
+- A footer that lists too many row groups.
 - A null frame number or timestamp in the frames file.
 - A frame number outside 0 to the expected frame count minus 1.
+
+A MemoryError while the rules run or while the frames file is scanned is also an INTEGRITY
+rejection of the whole drive.
 
 At most 20 problems are stored per drive; when there are more, one extra row says
 "and K more problems". A frames file that reads fine but has the wrong columns or types is
@@ -49,7 +56,9 @@ _GENERATOR = """\
 ## Generator-side limits
 
 The generator itself rejects a scenario instead of writing a bad drive: a duration that is not
-a whole number of frames, or a move whose start and end speed are both 0.
+a whole number of frames, a move whose start and end speed are both 0, a scenario of more than
+2,000 frames (`MAX_FRAMES` in `generator.models`), or a stop segment while the vehicle is not at
+rest (a stop needs speed 0; ASSUMPTIONS A40).
 """
 
 

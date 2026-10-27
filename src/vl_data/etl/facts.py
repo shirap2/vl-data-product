@@ -28,7 +28,7 @@ FACT_COLUMNS: list[str] = [
     "cy_cm",  # centroid y in cm, NaN unless cloud_ok
     "cz_cm",  # centroid z in cm, NaN unless cloud_ok
 ]
-_BYTES_PER_POINT = 12  # bytes; schemas.py keeps this private, so one local copy
+_BYTES_PER_POINT = 12  # bytes; a local copy of the public core.schemas.BYTES_PER_POINT
 _MAX_SPREAD_CM = 1  # cm, rounding wobble allowed in the lattice shape
 _INT32_MIN = int(np.iinfo(np.int32).min)
 _INT32_MAX = int(np.iinfo(np.int32).max)

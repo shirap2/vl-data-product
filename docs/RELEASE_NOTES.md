@@ -50,15 +50,20 @@ arguments prints the help text and exits with code 2. Python 3.11 or newer is re
 
 Run these with the project's virtual environment active, or call `.venv\Scripts\python.exe` in place of `python`.
 
-Generate the demo drive (1,000 frames, one reversal, two stops). The fresh-clone run on 2026-10-25
-took 86.6 s including verification (measured, same log; the 2026-10-24 run on this machine took 81 s).
-This Usage section owns the measured run figures; other documents point here. The fresh-clone check
-was run twice. Run 1 (`FINAL-DOCS-iter1-fresh-clone-run1.log` and `FINAL-DOCS-iter1-fresh-clone.log`
-in `.claude/run-proofs/`, local, git-ignored, A28) gives every time of the 2026-10-25 fresh-clone check quoted in these notes (the 10.35 s of the Generate-tab UI tests comes from `TASK-7-1-1-iter1-ui-tests.log`);
-the 81 s of 2026-10-24 comes from `FULL-DENSITY-iter2.log` (`duration_s=81`). Run 2
-(`FINAL-DOCS-iter2-fresh-clone.log`) also passed all steps, but its
-timings were unreliable and
-are not used:
+Generate the demo drive (1,000 frames, one reversal, two stops). The times of this command vary a
+lot on this machine: the full-density `generate` (with verification) took 237.7 s in the
+fresh-clone run of 2026-10-25 on the Loader branch (`FINAL-DOCS-M2-fresh-clone.log`, read here;
+other programs were running), and 81 s in an earlier run (the 81 s is
+`FULL-DENSITY-iter2.log`, `duration_s=81`; that log is not in this checkout; the 75.1 s in
+`FULL-DENSITY-measure.log` is a scratch-script write without verification, not this command). The
+spread is unexplained, so treat 81 to 238 s as the range seen, from single runs. This Usage section owns the
+measured run figures; other documents point here. The Generator branch's own fresh-clone check
+(`FINAL-DOCS-iter1-fresh-clone-run1.log` and `FINAL-DOCS-iter1-fresh-clone.log`, 86.6 s for the same
+command; the 10.35 s of the Generate-tab UI tests comes from `TASK-7-1-1-iter1-ui-tests.log`) is
+quoted below where noted. These logs are in `.claude/run-proofs/` (local, git-ignored, A28; the
+logs of the Generator branch may exist only in its own checkout). A second Generator-branch run
+(`FINAL-DOCS-iter2-fresh-clone.log`) passed all steps, but its timings were unreliable and are not
+used:
 
 ```powershell
 python -m vl_data generate --scenario src/vl_data/generator/scenarios/demo.yaml --out data/raw
@@ -99,8 +104,10 @@ invalid one (`generate`) gives a one-line `error: ...` message and exit code 1 (
 fresh-clone check).
 
 Check that the generator can read its own drive back (the two-way check). Run on 2026-10-25,
-it took 54.5 s wall time at full density (1,000,000 points per frame; measured in the fresh-clone run on
-2026-10-25, same log) and writes nothing to disk:
+it took 56.1 s (and 54 s in an earlier run on the same clone) at full density (1,000,000 points
+per frame; measured, `FINAL-DOCS-M2-fresh-clone.log`; the full-density run of 2026-10-24 took 70.0 s, ASSUMPTIONS A15, so one machine gave 54 to 70 s
+in single runs; a time of 1.41 s was measured at the old 10-points-per-axis density and does not
+apply) and writes nothing to disk:
 
 ```powershell
 python -m vl_data roundtrip --scenario src/vl_data/generator/scenarios/demo.yaml
@@ -166,8 +173,8 @@ disk guard compares the size estimate below (frames x bytes per frame, uncompres
 back for an existing folder) with the free bytes on the `raw_dir` disk (or its nearest existing parent folder if `raw_dir`
 does not exist yet). If the estimate is larger, the tab shows a red error with both numbers and writes nothing. Otherwise
 it shows a warning such as "This drive has 1000 frames, about 12,000,000,000 bytes (uncompressed point
-data)" (1,000 frames x 12,000,000 bytes at full density, computed; about 12,000 bytes per frame, 12,000,000 bytes for 1,000 frames, at the
-10-points-per-axis test body, computed). It then writes the drive under `raw_dir` with the same function
+data)" (1,000 frames x 12,000,000 bytes at full density, computed; the unit tests use a smaller body, so
+their text shows smaller numbers). It then writes the drive under `raw_dir` with the same function
 the `generate` command uses, and shows the folder, the scenario hash and the frame count. A
 wrong form or table shows a red error and no plot. A bad cell (blank, text, true/false, not a number or infinite) names the segment and the field, for example "segment 0 duration_s must be a finite
 number"; a bad start field names the field ("start x_cm must be a finite number"); a duration that
@@ -180,7 +187,7 @@ before the writer, so with a full disk the user sees the disk error first. Two G
 at the same time for a drive that does not exist yet can still both write (the race is not closed, A79). The tab is tested with Streamlit's test runner
 (`tests/generator/test_ui.py`, 49 tests, 48 passed and 1 skipped, in 10.35 s, measured in
 `.claude/run-proofs/TASK-7-1-1-iter1-ui-tests.log`; the one skip is the real-symlink test, which needs the Windows symbolic-link right
-and has a no-rights stand-in that ran; the whole suite was 332 tests, 331 passed and 1 skipped, 100.00% coverage, measured in `TASK-7-1-1-iter1-suite.log`; the fresh-clone run on 2026-10-25 gave the same: 331 passed, 1 skipped in 32.41 s, 100% coverage of 1,037 statements, with ruff and mypy clean (measured, `FINAL-DOCS-iter1-fresh-clone.log`); the logs are local, git-ignored, A28), which cannot edit the table, so editing a row
+and has a no-rights stand-in that ran; on the Generator branch at that time the whole suite was 332 tests, 331 passed and 1 skipped, 100.00% coverage, measured in `TASK-7-1-1-iter1-suite.log`, and its fresh-clone run on 2026-10-25 gave 331 passed, 1 skipped in 32.41 s, 100% coverage of 1,037 statements, with ruff and mypy clean (measured, `FINAL-DOCS-iter1-fresh-clone.log`). On the Loader branch after `main` was merged in (2026-10-27, measured, output not saved to `.claude/run-proofs/`), the whole suite gave 898 passed and 4 skipped in 110 s, with 282 of the tests in `tests/etl` and 99% line coverage of the package. The logs are local, git-ignored, A28), which cannot edit the table, so editing a row
 by hand is not covered by a test.
 
 Load the drive into the lake:
@@ -205,14 +212,19 @@ followed); a single folder must be named the same way. `error-codes --write` and
 0 when `docs/ERROR_CODES.md` matches the rule registry; `--write` regenerates it.
 
 What was run (2026-10-25): the command-line and end-to-end tests on the small body (125 points
-per frame, 1,000 frames; `tests/etl/test_cli.py`, `test_errors_doc.py`, `test_e2e.py`, 36 tests),
+per frame, 1,000 frames; `tests/etl/test_cli.py`, `test_errors_doc.py`, `test_e2e.py`, 55 tests: 41 + 6 + 8),
 which ingest through the root app and query the lake with DuckDB (9 keypoints per frame; each of
 the six faults gives its code in the quarantine view); `python -m vl_data error-codes --write`
-followed by `--check` (exit 0). The full-density command-line run was also done (`generate` to `data/raw_proof`,
-then `ingest --all data/raw_proof --lake-dir warehouse`, `.claude/run-proofs/TASK-5-iter2-a.log`):
-exit 0, `status: ok`, `frames_kept: 1000`, `frames_quarantined: 0`, `keypoint_rows: 9000`,
-`points_per_frame_in: 1000000`, `keypoints_per_frame_out: 9`, `elapsed_s: 43.7`; about 120 s of
-wall-clock time for generate plus ingest (one run, measured). Three tests need an OS or account
+followed by `--check` (exit 0). The full-density command-line run was also done, twice (single runs, measured).
+First (`generate` to `data/raw_proof`, then `ingest --all data/raw_proof --lake-dir warehouse`,
+`.claude/run-proofs/TASK-5-iter2-a.log`): exit 0, `status: ok`, `frames_kept: 1000`,
+`frames_quarantined: 0`, `keypoint_rows: 9000`, `points_per_frame_in: 1000000`,
+`keypoints_per_frame_out: 9`, `elapsed_s: 43.7`; about 120 s of wall-clock time for generate plus
+ingest. Second, from a fresh clone (`FINAL-DOCS-M2-fresh-clone.log`): `ingest --all data/raw
+--lake-dir warehouse` gave the same counts with `elapsed_s: 49.1` (wall 50.9 s), and
+`ingest data/raw/bf394b9bfb42 --lake-dir warehouse` gave `elapsed_s: 45.8` (wall 47.4 s); `generate`
+in that run took 237.7 s. The Generate tab started in that run too: HTTP 200 on `/` and `ok` on
+`/_stcore/health` at 127.0.0.1:8765. Three tests need an OS or account
 that can create symlinks or odd folder names and were skipped on this machine.
 
 ### Motion (Module 3)
@@ -344,7 +356,7 @@ covers. The page was not opened in a browser by hand, and the full-density demo 
 ## Known issues
 
 - No rotation. The vehicle never turns or yaws. A real vehicle rotates.
-- A drive at full density is large: 12 GB (12,000,000,000 bytes) of points per 1,000 frames before compression (computed; 287 MB on disk with zstd, measured), and generating and round-tripping it take about 87 s (generate) and 55 s (round trip), measured in the fresh-clone run 1 on 2026-10-25. `generate()` and `write_drive` hold a whole drive in memory; use the `generate` command (it streams). A drive over 1 GiB (2^30 = 1,073,741,824 bytes) of points (more than 89 frames at full density) is refused by `generate()` and `write_drive`.
+- A drive at full density is large: 12 GB (12,000,000,000 bytes) of points per 1,000 frames before compression (computed; 287 MB on disk with zstd, measured), and generating and round-tripping it take 65 to 238 s (generate) and 54 to 70 s (round trip) in single runs on one machine, with an unexplained spread (see Usage). `generate()` and `write_drive` hold a whole drive in memory; use the `generate` command (it streams). A drive over 1 GiB (2^30 = 1,073,741,824 bytes) of points (more than 89 frames at full density) is refused by `generate()` and `write_drive`.
 - A scenario may have at most 2,000 frames (125 s at 16 fps). At full density that is about 0.6 GB on disk and about 2.5 minutes to generate (computed: twice the 75.1 s of the 1,000-frame write in `FULL-DENSITY-measure.log`, not run). The cap is a validation limit in `generator.models`.
 - Motion is one-dimensional (along x).
 - Values are rounded to whole centimetres, which adds small errors. Per-frame acceleration is too
@@ -359,8 +371,8 @@ covers. The page was not opened in a browser by hand, and the full-density demo 
   as one atomic step. A crash in between is repaired by loading the drive again.
 - The lake is single-writer: load one drive at a time. A failed partition restore leaves the old
   data in `_swap/old-<id>` for you to recover by hand; it is never deleted automatically.
-- The loader reads the frames file from disk twice: `verify_drive` hashes it once, then the scan reads it once more, in chunks (the ground-truth file is hashed once and never parsed). It is built for one machine, not for a stream. Measured peak memory was about 1.7 to 1.9 GiB at full density, while one Parquet row group is about 600 MB uncompressed (50 frames); the chunk size does not bound it. A drive with a row group above 2,048 MiB (`max_row_group_mib`) is rejected.
-- Measured on 2026-10-25 (one machine, demo drive `bf394b9bfb42`, 1,000 frames x 1,000,000 points, row groups of 50 frames): the latest run took 44.7 s for the first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB (`.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and 1,718 MiB (`TASK-4-measure.log`). One first run (`TASK-4-measure-iter2.log`) took 3,730 s while its CPU time was only about 54 s; the cause is unknown and it was not reproduced, so it is an open outlier (the next full-density run should log free memory and disk). The frame scan alone took 91 s and 1.59 GiB before the speed-up, and about 39 s per 1,000 frames (2.4 times faster) on a 200-frame benchmark after it.
+- The loader reads the frames file from disk twice: `verify_drive` hashes it once, then the scan reads it once more, in chunks (any other file in the manifest is hashed once and never parsed). It is built for one machine, not for a stream. Measured peak memory was about 1.7 to 1.9 GiB at full density, while one Parquet row group is about 600 MB uncompressed (50 frames); the chunk size does not bound it. A drive with a row group above 2,048 MiB (`max_row_group_mib`) is rejected.
+- Measured on 2026-10-25 (one machine, demo drive `bf394b9bfb42`, 1,000 frames x 1,000,000 points, row groups of 50 frames): the latest run took 44.7 s for the first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB (`.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and 1,718 MiB (`TASK-4-measure.log`). One first run (`TASK-4-measure-iter2.log`) took 3,730 s while its CPU time was only about 54 s; the cause is unknown and it was not reproduced, so it is an open outlier (the next full-density run should log free memory and disk). A frame scan of 91 s and 1.59 GiB before a speed-up was measured once in a session; the output was not saved to a log.
 - A drive folder is treated as hostile: a manifest above 2,000,000 points per frame (`max_points_per_frame`), a Parquet footer claiming more than 2 x expected frames + 1,000 rows, or a malformed `scenario_hash` is rejected with `INTEGRITY` before anything large is allocated, and at most 20 problems (plus one "and K more" row) are stored per drive. The row-group size check trusts the footer, so a compression bomb is a known gap.
 - `frames_rejected` counts quarantine rows that name a file row, so a frame that breaks two rules counts twice; `frames_in` is not always `frames_kept + frames_rejected`. The ingest assumes the drive folder does not change while it runs.
 - A drive whose frames file cannot be read, whose manifest cannot be read, or whose folder name is not its scenario hash is rejected with the code `INTEGRITY`, not with one of the six VL codes.

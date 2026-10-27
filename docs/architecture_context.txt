@@ -54,7 +54,8 @@ MODULE 1: DATA GENERATOR
   velocity from centroids; fit_segments(track) recovers the typed segment list. hypothesis
   tests check infer(generate(s)) ~= s with MEASURED tolerances. Also: a 1 cm x-move shifts
   every point by exactly (1,0,0).
-- Fault-injection helper (drop frames, corrupt a frame, shift timestamps) for ETL tests.
+- Fault-injection helper (generator/faults.py) for ETL tests: six faults, one per code
+  (DropFrame, ShiftTimestamp, DuplicateFrame, CorruptPoints, BreakSchema, Teleport).
 - Noise: out of scope. The only error is integer-cm rounding of the points.
 
 MODULE 2: LOADER / ETL
@@ -62,7 +63,9 @@ MODULE 2: LOADER / ETL
   VL-001 missing frame, VL-002 timestamp gap, VL-003 duplicate frame, VL-004 corrupt point
   cloud, VL-005 schema mismatch, VL-006 physically impossible motion.
 - Reduce each frame to critical points: 8 cube corners + centroid (9 points), chosen by a
-  list in YAML. Reason for corners: fixed spacing is a rigid-shape check (VL-004).
+  list in YAML. VL-004 (rigid-shape check) compares the whole cloud with the lattice: per axis,
+  the offsets of the points from the lattice may spread by at most 1 cm. The corners are only
+  keypoints, picked by index.
 - Assumption: sensor point order is fixed, so keypoints are picked by index.
 - Tech: pandas, numpy, PyArrow, DuckDB, rule registry.
 - Lake tables: keypoints, quarantine, lineage. Idempotent re-ingest via partition swap.
@@ -135,8 +138,9 @@ DECISIONS LOG (plan-loop for Module 1, 2026-10-23)
 - Point sample: REPLACED on 2026-10-24, see "FULL DENSITY" below. (First plan: 10x10x10
   lattice, 1,000 points from 0 to 99 cm; the 8 corners are lattice points, fixed order,
   no seed needed. That part still holds.)
-- Scenario hash: SHA-256 of canonical JSON of the validated scenario (sorted keys, fixed
-  number formatting) + seed.
+- Drive hash (stored as scenario_hash in the manifest): SHA-256 of canonical JSON (sorted
+  keys, fixed number formatting) of {body, scenario}; the seed is part of the scenario. The
+  body joined the hash on 2026-10-24 (see FULL DENSITY below, ASSUMPTIONS A52).
 - infer_scenario: both, in two steps (infer_track, then fit_segments).
 - Manifest file hashes: SHA-256 of the file bytes on disk.
 - Drive folder: data/raw/<first 12 hex of scenario hash>/ ; the manifest keeps the full
@@ -149,8 +153,10 @@ full density; throwaway script, 1000-frame demo, 10x10x10 integer lattice, float
 rounded with rint; planar variant, 1-D numbers re-measured in the plan)
 - Position error max 0.66 cm (bound 0.87 cm). Speed error per frame max 17.6 cm/s (bound
   22.6). Acceleration error per frame max 462 cm/s^2 (bound 724), larger than a -150 cm/s^2
-  braking signal, so per-frame acceleration is unusable and fits must use windows.
-- Piecewise-linear change-point fit found segment boundaries within 2 frames.
+  braking signal, so per-frame acceleration is unusable and fits must use windows. (The
+  462 cm/s^2 and the 0.66 and 17.6 figures above are not logged and are not evidence.)
+- Piecewise-linear change-point fit found segment boundaries within 2 frames (throwaway
+  script, not logged). The logged roundtrip at full density gave a boundary error of 4 frames.
 
 - Docs process (2026-10-23): docs are updated during each task (own sections only, numbers
   and commands from real runs), then one final docs pass runs every documented command from a
@@ -230,7 +236,8 @@ STILL OPEN
 OTHER SESSIONS
 - A Module 2 (Loader/ETL) session works in worktree-module2-loader-etl. It was told on
   2026-10-23 that the generator contract (frames.parquet Arrow schema, manifest key names,
-  fault-injection helper, core/ path) was not final. Built and committed on 2026-10-25: manifest
+  fault-injection helper, core/ path) was not final. It has since been agreed and implemented.
+  Built and committed on 2026-10-25: manifest
   schema_version 2 with the body block, the drive layout and the fault helper; the Module 2
   session merged it up to commit 0c189cd on 2026-10-25 and reported its own suite passing (its
   report, not verified here; the body-block design was agreed on 2026-10-24, see A64).
