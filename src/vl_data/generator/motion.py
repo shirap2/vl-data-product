@@ -64,21 +64,3 @@ def integrate_position(
     """Forward-Euler x position in cm: x[0] = start, x[k+1] = x[k] + v[k] / fps."""
     steps = speed_cm_s[:-1] / fps  # cm per frame
     return start_x_cm + np.concatenate(([0.0], np.cumsum(steps)))
-
-
-def ground_truth_arrays(
-    x_cm: NDArray[np.float64], speed_cm_s: NDArray[np.float64], fps: int
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Return (velocity_cm_s, acceleration_cm_s2) per frame, by forward differences.
-
-    velocity[k] = (x[k+1] - x[k]) * fps and acceleration[k] = (speed[k+1] - speed[k]) * fps;
-    the last frame repeats the previous value. One frame: velocity = speed, acceleration 0.
-    """
-    if len(x_cm) == 1:
-        return np.array([speed_cm_s[0]], dtype=np.float64), np.array([0.0])
-    velocity = np.diff(x_cm) * fps
-    acceleration = np.diff(speed_cm_s) * fps
-    return (
-        np.concatenate((velocity, velocity[-1:])),
-        np.concatenate((acceleration, acceleration[-1:])),
-    )

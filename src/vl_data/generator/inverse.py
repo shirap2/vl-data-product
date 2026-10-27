@@ -78,7 +78,7 @@ def _check_binary(array: pa.Array) -> None:
 
 
 def infer_track(frames: pa.Table | Iterable[pa.RecordBatch], config: Config) -> Track:
-    """Recover body x, y, z (cm) and x velocity (cm/s) from the frames alone (no ground truth).
+    """Recover body x, y, z (cm) and x velocity (cm/s) from the frames alone.
 
     Each coordinate is the mean of a frame's points minus the lattice centre, so it is the body
     origin in cm, the same reference as the generator's position. Velocity is the forward

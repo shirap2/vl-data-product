@@ -145,8 +145,8 @@ def inject_faults(
     """Apply faults to the frames table; return the new drive and injected counts per code.
 
     Each fault targets the row with its frame_id in the original drive (timestamps in ns,
-    point coordinates in cm). Ground truth and scenario hash are unchanged; the input drive is
-    not modified. frame_interval_ns (ns, default 62,500,000) is the bound for ShiftTimestamp.
+    point coordinates in cm). The scenario hash is unchanged; the input drive is not
+    modified. frame_interval_ns (ns, default 62,500,000) is the bound for ShiftTimestamp.
     Raises ValueError for repeated frame_ids or non-increasing timestamps in the input table,
     an unknown frame_id, two faults on one frame_id, more than one BreakSchema, a delta_ns that
     is not an int, is 0, leaves int64 or has |delta_ns| >= frame_interval_ns, dx_cm == 0,

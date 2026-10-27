@@ -20,16 +20,15 @@ DECISIONS
 - API: Python SDK (VLClient) + SQL. No web service (FastAPI is "coming soon").
   Confirmed by the user on 2026-10-23. VLClient is built in Module 3 and reads through
   core/lake.py, which Module 2 builds.
-- Ground truth is stored outside the warehouse and read only by the evaluation step.
 - Every file is hashed (SHA-256). manifest.json lists the scenario hash and the hash of
   every file. A lineage table links scenario hash -> file hashes -> row counts, so data
-  can be tied to its scenario and checked against ground truth.
+  can be tied to its scenario.
 - Quality: Typer CLI, pytest + hypothesis, ruff, mypy, src layout, Python 3.11,
   Windows PowerShell (python -m ... only).
 
 OVERALL SHAPE
  config/*.yaml -> core/config.py (pydantic)
- [1 GENERATOR] -> data/raw/<hash12>/{frames.parquet, ground_truth.parquet, manifest.json}
+ [1 GENERATOR] -> data/raw/<hash12>/{frames.parquet, manifest.json}
    -> [2 ETL] (verify hashes, validate VL-001..006, reduce to keypoints) -> lake
    -> [3 USE-CASE] (velocity, acceleration from the lake) -> lake
    -> SDK (+SQL) -> [4 BI: one Streamlit app, 3 tabs]
@@ -47,7 +46,7 @@ MODULE 1: DATA GENERATOR
 - Output: full point cloud per frame (1 m cube, 100x100x100 lattice = 1,000,000 points,
   1 cm apart, from 0 to 99 cm, fixed order, int32 cm, 16 fps,
   timestamp_ns = frame_id * 62,500,000),
-  ground_truth.parquet (per-frame x position, velocity, acceleration), manifest.json.
+  and manifest.json.
 - Tech: numpy, pydantic, PyYAML, PyArrow, hashlib, Typer.
 - UI: minimal form in the Streamlit Generate tab (start values, editable segment table,
   preview plot, Generate button). CLI calls the same function.
@@ -78,21 +77,15 @@ MODULE 3: USE-CASE ALGORITHM
   A missing frame needs no special case; a window with too few points or a gap above
   max_gap_frames gives null, never zero.
 - Settings in config/motion.yaml (MotionConfig): window_frames, poly_order, min_points,
-  max_gap_frames, position_keypoint (centroid) and the evaluation tolerances. The values
+  max_gap_frames and position_keypoint (centroid). The values
   were MEASURED by tools/motion_sweep.py, not guessed (window 16, order 2, see
   docs/ARCHITECTURE.md for the table).
 - Output: motion table in the lake, partitioned by drive: frame_id, timestamp_ns, x_cm (the
   raw centroid x), velocity_cm_s and acceleration_cm_s2 (nullable), n_points (samples in the
   window). compute_motion refuses a drive without exactly one lineage row, with a status other
   than ok, without centroid rows, or with bad timestamps or positions, and writes nothing then.
-- Evaluation (usecase/evaluate.py, the ONLY code that opens ground truth): verifies the drive
-  files, checks the lineage hashes against the manifest, then compares motion with ground
-  truth by frame_id. Errors (max and RMS) for position, velocity and acceleration are reported
-  on interior frames (no change of true acceleration inside the window) and on all frames;
-  pass or fail gates the interior frames. The report also carries a per-frame table
-  (estimated and true position, velocity, acceleration) so the Analyze tab can plot them. It
-  is returned and printed, never stored in the lake.
-- Commands: python -m vl_data motion <drive_id>, python -m vl_data evaluate <drive_dir>.
+- Command: python -m vl_data motion <drive_id>. There is no evaluation command (see the
+  2026-10-26 decision below).
 
 MODULE 4: BI
 - One Streamlit + Plotly app, three tabs: Generate, Clean (quality by error code, kept vs
@@ -132,7 +125,8 @@ DECISIONS LOG (plan-loop for Module 1, 2026-10-23)
 - The project skeleton (pyproject.toml, src layout, tooling, YAML config loader) is part
   of the Module 1 plan.
 - Noise: out of scope.
-- Ground truth: per-frame x position, velocity and acceleration. No event labels.
+- Ground truth: none. The assignment does not ask for it, so the generator writes no ground-truth file
+  and no evaluation exists (decision of 2026-10-26, done in Modules 1 to 4 on 2026-10-27).
 - UI scope for Module 1: the Generate tab only, as a self-contained function with a small
   standalone runner. The three-tab shell is built in Module 4.
 - Approved extra sources: official docs of pydantic, PyYAML, Typer, hypothesis, Python
@@ -150,8 +144,8 @@ DECISIONS LOG (plan-loop for Module 1, 2026-10-23)
 - Start speed: scenario start block has speed, default 0 (the drive starts at rest).
 - Durations: seconds, validated to whole frames.
 
-MEASURED (before the full-density change; throwaway script, 1000-frame demo, 10x10x10
-integer lattice, float positions
+MEASURED ON THE 10x10x10 LATTICE, BEFORE THE FULL-DENSITY CHANGE (history; NOT re-measured at
+full density; throwaway script, 1000-frame demo, 10x10x10 integer lattice, float positions
 rounded with rint; planar variant, 1-D numbers re-measured in the plan)
 - Position error max 0.66 cm (bound 0.87 cm). Speed error per frame max 17.6 cm/s (bound
   22.6). Acceleration error per frame max 462 cm/s^2 (bound 724), larger than a -150 cm/s^2
@@ -171,22 +165,32 @@ FULL DENSITY (user decision, 2026-10-24)
   999,999 (compute them from cube_lattice, do not hard-code). Module 2 picks keypoints by
   these indices; VL-004 (one point removed) is 999,999 points = 11,999,988 bytes.
 - Storage: zstd instead of snappy (a 2-frame test: snappy 8,048,769 bytes, zstd 549,552
-  bytes; to be repeated on a real drive). One Arrow binary array holds at most
+  bytes). Repeated on the real 1,000-frame demo drive (2026-10-24, measured):
+  snappy 4,024,944,648 bytes, zstd 287,134,433 bytes for frames.parquet. One Arrow binary
+  array holds at most
   2,147,483,647 bytes = 178 full frames, so frames are built and written in batches of
   about 50 frames and streamed to the parquet file (row groups of about 50 rows). The
-  in-memory generate() stays for small drives and tests.
-- Demo: keep the 1,000-frame demo at full density (about 12 GB raw, calculated). Time,
-  peak memory and size on disk are measured first; if unacceptable, the user decides.
+  in-memory generate() and write_drive stay for small drives and tests; they refuse a drive
+  over 1 GiB of points (MAX_IN_MEMORY_BYTES, more than 89 frames at full density), and
+  generate_to_disk (the CLI and the Generate tab) streams without that limit.
+- Demo: keep the 1,000-frame demo at full density (about 12 GB raw, computed: 1,000 frames
+  x 12,000,000 bytes; a scenario may have at most 2,000 frames, about 24 GB raw). Measured
+  2026-10-24: 75.1 s, peak working set 2,859 MiB (scratch script); the generate command took
+  81 s (source: .claude/run-proofs/FULL-DENSITY-iter2.log); the fresh-clone time of
+  2026-10-25 is in RELEASE_NOTES, Usage.
 - Hash: the body (size_cm, points_per_axis) joins the scenario hash, so each density has
-  its own hash and folder. This changes the demo hash (c8f597af59a6 today). Core files that
+  its own hash and folder. This changed the demo hash (it was c8f597af59a6 before the change; now bf394b9bfb42). Core files that
   Module 2 and 3 import are changed only after agreeing with the Module 2 session.
 - infer_scenario also recovers start y and z from the frames.
 - Manifest: Module 2 asked for a self-describing manifest (body size_cm and points_per_axis;
-  key names not decided yet). schema_version becomes 2 if the layout changes.
+  key names were not decided then). Done: schema_version 2 with a body block (size_cm,
+  points_per_axis).
 - Tests use a small-lattice config (10 per side) except tests of the full density.
-- Tolerances in the MEASURED block were measured on the 10x10x10 lattice and are re-checked
-  at full density. The task file is .claude/plans/followups/full-density.md; it runs after
-  TASK-6 (fault injection) and before TASK-7 (Generate tab).
+- Tolerances in the MEASURED block were measured on the 10x10x10 lattice. At full density the
+  roundtrip command (2026-10-25, fresh clone) printed boundary error 4 frames, duration error
+  5 frames and end-speed error 24.4 cm/s, within the limits; the position and velocity errors
+  were not re-measured there. The full-density work ran after TASK-6 (fault injection) and before
+  TASK-7 (Generate tab).
 
 DECISIONS LOG (plan-loop for Module 3, 2026-10-24 and 2026-10-25)
 - Package name: src/vl_data/usecase/ (not "motion"). SDK in src/vl_data/sdk/. Built in the
@@ -194,17 +198,23 @@ DECISIONS LOG (plan-loop for Module 3, 2026-10-24 and 2026-10-25)
 - Estimator: sliding-window least squares on real timestamps (user decision). Window and
   order come from a measurement (tools/motion_sweep.py), then YAML. Selection rule: lowest
   worst-case interior acceleration error among cells that keep at least 80% of frames
-  interior (a judgement, documented). Tolerances = 1.5 x the largest measured interior
-  error, rounded up to 0.1 (sweep drives plus a seeded random-scenario search).
+  interior (a judgement, documented). The sweep also measures a seeded random-scenario
+  search; its numbers are development measurements, not limits (see 2026-10-26 below).
 - Missing frames: fit on timestamps; assumptions recorded in docs/ASSUMPTIONS.md.
 - motion table: Module 3 adds the schema (agreed with the Module 2 session). x_cm holds the
   raw centroid x. n_points is kept. NaN is stored as null.
-- Ground truth is a forward difference while the fit is centred (bias about a/32): compared
-  directly, documented and covered by the measured tolerances.
+- The true motion that the sweep compares with is a forward difference while the fit is
+  centred (bias about a/32): compared directly and documented (M3-A17).
+- 2026-10-26, user decision: ground truth and an evaluation against it are not part of the
+  assignment. Module 3 removed usecase/evaluate.py, the evaluate command, the tolerances in
+  config/motion.yaml and the EvaluationError text. tools/motion_sweep.py stays as a developer
+  tool that computes the true motion from the scenario itself (true_motion); the accuracy
+  numbers in the docs are labelled development measurements; the estimator regression bounds
+  (19.4 cm/s, 31.9 cm/s^2) live in tests/usecase/test_estimator.py.
 - VLClient returns Arrow tables; sql allows exactly one SELECT; each query closes its
   connection. Known issue: a SELECT can still read any file via read_parquet (accepted).
-- Evaluation result: returned and printed only, not stored. It carries a per-frame table for
-  the BI Analyze tab (user decision D1, 2026-10-25).
+- Evaluation result (user decision D1, 2026-10-25): superseded on 2026-10-26, the evaluation
+  was removed.
 - Stale motion after a re-ingest is a known issue (re-run motion).
 - Docs: use-case errors listed without new codes (D5); technology alternatives documented,
   no extra estimator built (D6); this file is updated for Module 3 only (D7); SQL file reach
@@ -213,14 +223,17 @@ DECISIONS LOG (plan-loop for Module 3, 2026-10-24 and 2026-10-25)
 
 STILL OPEN
 - Nothing open for Module 1. (The API choice was confirmed on 2026-10-23, see DECISIONS.)
-- Module 3 (as of 2026-10-25): built (estimator, client, motion table, evaluation, sweep,
-  motion and evaluate commands, end-to-end run on the demo drive). Project-wide still to do:
+- Module 3 (as of 2026-10-25): built (estimator, client, motion table, sweep,
+  motion command, end-to-end run on the demo drive; evaluation removed on 2026-10-26). Project-wide still to do:
   Module 4 (BI), regenerate docs/LLM_USAGE.md and make it tracked, and the final pass.
 
 OTHER SESSIONS
 - A Module 2 (Loader/ETL) session works in worktree-module2-loader-etl. It was told on
   2026-10-23 that the generator contract (frames.parquet Arrow schema, manifest key names,
-  fault-injection helper, core/ path) is NOT final and will be sent after plan approval.
+  fault-injection helper, core/ path) was not final. Built and committed on 2026-10-25: manifest
+  schema_version 2 with the body block, the drive layout and the fault helper; the Module 2
+  session merged it up to commit 0c189cd on 2026-10-25 and reported its own suite passing (its
+  report, not verified here; the body-block design was agreed on 2026-10-24, see A64).
 
 LLM USAGE TRACKING
 - tools/llm_usage.py install was run on 2026-10-23. The raw log .claude/llm-usage/ is
@@ -228,8 +241,9 @@ LLM USAGE TRACKING
 
 NEXT STEPS (2026-10-25)
 1. Modules 1 and 2 are built (Module 1 Generate tab and Module 2 ingest CLI committed).
-2. Module 3: finish the motion and evaluate commands, the end-to-end proof and the docs.
-3. Module 4: the Streamlit app (Clean and Analyze tabs); Analyze uses the per-frame table
-   returned by evaluate_drive.
+2. Module 3: the motion command, the end-to-end proof and the docs (done; the evaluation
+   was removed on 2026-10-26).
+3. Module 4: the Streamlit app (Clean and Analyze tabs); Analyze reads the motion table
+   through VLClient (there is no ground truth to compare with).
 4. Final pass before 2026-10-30: run every documented command from a fresh clone, regenerate
    docs/LLM_USAGE.md, make the required docs tracked, push, send the repo link.

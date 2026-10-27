@@ -1,4 +1,4 @@
-"""Fixtures for the evaluation tests: one built drive, shared or copied. Units: cm, s."""
+"""Fixtures for the use-case tests: one built drive, shared or copied. Units: cm, s."""
 
 import shutil
 from collections.abc import Callable

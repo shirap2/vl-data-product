@@ -56,7 +56,6 @@ def lineage_batch() -> pa.RecordBatch:
             pa.array(["ok"], pa.string()),
             *[pa.array([n], pa.int64()) for n in (3, 3, 3, 0, 0, 3)],
             pa.array(["f"], pa.string()),
-            pa.array(["g"], pa.string()),
         ],
         schema=LINEAGE_SCHEMA,
     )

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
 import pytest
 
 from vl_data.core.config import BodyConfig, Config
@@ -109,20 +110,6 @@ def test_yaml_window_and_order_are_the_selection_rule_result(sweep_drives: list[
     assert cfg.min_points == sweep.default_min_points(cfg.window_frames)
 
 
-def test_yaml_tolerances_cover_measured_error(sweep_drives: list[Any]) -> None:
-    cfg = load_motion_config()
-    for drive in sweep_drives:
-        measured = sweep.measure_drive(drive, cfg)
-        assert measured.frames_interior > 0
-        assert cfg.tolerances.velocity_cm_s >= measured.velocity_interior.max_abs
-        assert cfg.tolerances.acceleration_cm_s2 >= measured.acceleration_interior.max_abs
-    for legs in sweep.PINNED_LEGS:
-        pinned = sweep.drive_from_scenario("p", sweep.scenario_from_legs(legs), SMALL)
-        measured = sweep.measure_drive(pinned, cfg)
-        assert cfg.tolerances.velocity_cm_s >= measured.velocity_interior.max_abs
-        assert cfg.tolerances.acceleration_cm_s2 >= measured.acceleration_interior.max_abs
-
-
 def test_sweep_drive_lengths_and_interior_shares(sweep_drives: list[Any]) -> None:
     demo, hard = sweep_drives
     assert (demo.name, len(demo.t_s)) == ("demo", 1000)
@@ -154,6 +141,44 @@ def test_centroid_identity_for_any_lattice_density(points_per_axis: int, x_cm: f
     lattice = cube_lattice(100, points_per_axis)
     centroid = float(place_body(lattice, x_cm, 0.0, 0.0)[:, 0].mean(dtype=np.float64))
     assert centroid == pytest.approx(49.5 + np.rint(x_cm), abs=1e-9)
+
+
+def test_max_abs_rms_of_known_errors() -> None:
+    got = sweep.max_abs_rms(np.array([1.0, 2.0, 5.0]), np.array([1.0, 4.0, 5.0]))
+    assert got.max_abs == 2.0 and got.rms == pytest.approx(np.sqrt(4.0 / 3.0))
+    empty = sweep.max_abs_rms(np.array([]), np.array([]))
+    assert np.isnan(empty.max_abs) and np.isnan(empty.rms)
+
+
+def test_interior_mask_excludes_half_a_window_around_each_change() -> None:
+    acceleration = np.zeros(20)
+    acceleration[10:] = 5.0  # a change at frame 10
+    mask = sweep.interior_mask(acceleration, 3.0)
+    assert not mask[7:14].any()  # frames 10 +/- 3 are not interior
+    assert mask[:7].all() and mask[14:19].all()
+    assert not mask[19]  # the last frame is never interior
+    assert sweep.interior_mask(np.zeros(5), 2.0).tolist() == [True, True, True, True, False]
+
+
+def test_true_motion_of_a_ramp_and_a_stop() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "seed": 0,
+            "start": {"x_cm": 10.0, "y_cm": 0.0, "z_cm": 0.0, "speed_cm_s": 0.0},
+            "segments": [
+                {"type": "move", "duration_s": 1.0, "end_speed_cm_s": 160.0},
+                {"type": "move", "duration_s": 1.0, "end_speed_cm_s": 0.0},
+                {"type": "stop", "duration_s": 1.0},
+            ],
+        }
+    )
+    x, velocity, acceleration = sweep.true_motion(scenario, 16)  # 48 frames; speed 10 cm/s * frame
+    assert x.size == velocity.size == acceleration.size == 48
+    assert x[0] == 10.0 and x[16] == pytest.approx(85.0)  # 10 + 10 * (0 + ... + 15) / 16
+    assert velocity[:16] == pytest.approx(10.0 * np.arange(16))  # velocity equals the speed
+    assert acceleration[:16] == pytest.approx(160.0)  # 10 cm/s per frame at 16 fps
+    assert acceleration[16:32] == pytest.approx(-160.0)
+    assert np.all(velocity[32:] == 0.0) and np.all(acceleration[32:] == 0.0)
 
 
 def test_baseline_exact_on_a_parabola() -> None:
@@ -206,27 +231,6 @@ def test_selection_rule_needs_a_cell() -> None:
         sweep.choose_default([baseline])
 
 
-@pytest.mark.parametrize(
-    ("measured", "expected"),
-    [(2.0, 3.0), (2.04, 3.1), (10.0, 15.0), (0.01, 0.1), (3.3333, 5.0), (7.0, 10.5), (0.0, 0.1)],
-)
-def test_tolerance_rounds_up_to_one_decimal(measured: float, expected: float) -> None:
-    got = sweep.tolerance_from_measured(measured)
-    assert got == pytest.approx(expected)
-    assert got >= measured and got > 0
-
-
-def test_tolerance_never_below_measured_for_many_values() -> None:
-    for measured in np.linspace(0.001, 500.0, 997):
-        assert sweep.tolerance_from_measured(float(measured)) >= measured
-
-
-@pytest.mark.parametrize("bad", [-1.0, float("nan"), float("inf")])
-def test_tolerance_rejects_bad_measurements(bad: float) -> None:
-    with pytest.raises(ValueError):
-        sweep.tolerance_from_measured(bad)
-
-
 def test_derived_settings_are_valid_for_the_whole_grid() -> None:
     for window in sweep.DEFAULT_WINDOWS:
         for order in sweep.DEFAULT_ORDERS:
@@ -264,13 +268,9 @@ def test_write_yaml_updates_only_measured_fields(tmp_path: Path) -> None:
     target = tmp_path / "motion.yaml"
     target.write_text("# PROVISIONAL: placeholder values\n" + before, encoding="utf-8")
     row = _row(24, 3, [(5.0, 30.0)])
-    sweep.write_yaml(
-        target, row, 7.5, 45.0, stamp="2026-01-01", basis="a random-scenario search (seed 9)"
-    )
+    sweep.write_yaml(target, row, stamp="2026-01-01", basis="a random-scenario search (seed 9)")
     cfg = load_motion_config(target)
     assert (cfg.window_frames, cfg.poly_order, cfg.min_points) == (24, 3, 13)
-    assert cfg.tolerances.velocity_cm_s == 7.5
-    assert cfg.tolerances.acceleration_cm_s2 == 45.0
     assert cfg.position_keypoint == "centroid" and cfg.max_gap_frames == 4
     text = target.read_text(encoding="utf-8")
     assert "PROVISIONAL" not in text and "2026-01-01" in text
@@ -279,7 +279,7 @@ def test_write_yaml_updates_only_measured_fields(tmp_path: Path) -> None:
     assert "# frames in the sliding fit window" in text  # field comments stay
     assert "position_keypoint: centroid" in text
     # A second write replaces the note instead of stacking another one.
-    sweep.write_yaml(target, row, 7.5, 45.0, stamp="2026-02-02", basis="x")
+    sweep.write_yaml(target, row, stamp="2026-02-02", basis="x")
     again = target.read_text(encoding="utf-8")
     assert again.count("Measured by") == 1 and "2026-01-01" not in again
 
@@ -289,23 +289,21 @@ def test_write_yaml_keeps_crlf_line_endings(tmp_path: Path) -> None:
     target.write_bytes(
         YAML_PATH.read_text(encoding="utf-8").replace("\r\n", "\n").encode().replace(b"\n", b"\r\n")
     )
-    sweep.write_yaml(target, _row(16, 2, [(1.0, 1.0)]), 2.0, 3.0, stamp="s")
+    sweep.write_yaml(target, _row(16, 2, [(1.0, 1.0)]), stamp="s")
     raw = target.read_bytes()
     assert raw.count(b"\r\n") == raw.count(b"\n") > 5
 
 
-def test_write_yaml_replaces_tolerance_keys_only_inside_tolerances(tmp_path: Path) -> None:
+def test_write_yaml_changes_only_top_level_fields(tmp_path: Path) -> None:
     target = tmp_path / "motion.yaml"
     target.write_text(
-        "window_frames: 16\npoly_order: 2\nmin_points: 9\n"
-        "other:\n  velocity_cm_s: 1.0\ntolerances:\n  velocity_cm_s: 2.0\n"
-        "  acceleration_cm_s2: 3.0\n",
+        "window_frames: 16\npoly_order: 2\nmin_points: 9\nother:\n  window_frames: 1\n",
         encoding="utf-8",
     )
-    sweep.write_yaml(target, _row(24, 2, [(1.0, 1.0)]), 8.0, 9.0, stamp="s")
+    sweep.write_yaml(target, _row(24, 2, [(1.0, 1.0)]), stamp="s")
     text = target.read_text(encoding="utf-8")
-    assert "other:\n  velocity_cm_s: 1.0\n" in text
-    assert "  velocity_cm_s: 8.0" in text and "  acceleration_cm_s2: 9.0" in text
+    assert "window_frames: 24" in text
+    assert "other:\n  window_frames: 1\n" in text
 
 
 def test_write_yaml_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -318,7 +316,7 @@ def test_write_yaml_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(os, "replace", fail)
     with pytest.raises(OSError):
-        sweep.write_yaml(target, _row(24, 2, [(1.0, 1.0)]), 8.0, 9.0, stamp="s")
+        sweep.write_yaml(target, _row(24, 2, [(1.0, 1.0)]), stamp="s")
     assert target.read_bytes() == before  # the original is untouched
     assert [p.name for p in tmp_path.iterdir()] == ["motion.yaml"]  # no temp file left
 
@@ -328,9 +326,9 @@ def test_write_yaml_rejects_the_baseline_row_and_missing_fields(tmp_path: Path) 
     target.write_text("window_frames: 16\n", encoding="utf-8")
     baseline = sweep.SweepRow("per-frame differences", None, None, {"d": _errors(1.0, 1.0)})
     with pytest.raises(ValueError):
-        sweep.write_yaml(target, baseline, 1.0, 1.0, stamp="x")
+        sweep.write_yaml(target, baseline, stamp="x")
     with pytest.raises(ValueError, match="not found"):
-        sweep.write_yaml(target, _row(16, 2, [(1.0, 1.0)]), 1.0, 1.0, stamp="x")
+        sweep.write_yaml(target, _row(16, 2, [(1.0, 1.0)]), stamp="x")
     assert target.read_text(encoding="utf-8") == "window_frames: 16\n"
 
 
@@ -349,9 +347,9 @@ def test_main_prints_table_and_writes_yaml(
     assert "scenarios (seed 0)" in out
     cfg = load_motion_config(yaml_copy)
     assert (cfg.window_frames, cfg.poly_order) == (16, 2)
-    # The tolerances include the pinned counterexample, not only the sweep drives.
-    assert cfg.tolerances.acceleration_cm_s2 >= sweep.tolerance_from_measured(19.5)
-    assert cfg.tolerances.velocity_cm_s >= sweep.tolerance_from_measured(12.9)
+    assert "tolerance" not in out.lower()  # the sweep reports measurements, not limits
+    written = yaml_copy.read_text(encoding="utf-8")
+    assert "tolerances" not in written and "developer measurement" in written
 
 
 def test_main_without_write_leaves_the_yaml_alone(
@@ -387,6 +385,40 @@ def test_main_rejects_bad_arguments(args: list[str]) -> None:
     assert info.value.code == 2
 
 
+def test_compare_stored_motion_counts_nulls_and_measures_errors() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "seed": 0,
+            "start": {"x_cm": 0.0, "y_cm": 0.0, "z_cm": 0.0, "speed_cm_s": 0.0},
+            "segments": [{"type": "stop", "duration_s": 2.0}],
+        }
+    )  # 32 frames at 16 fps, always at x = 0: the true motion is all zeros
+    offset = 49.5  # (100 - 1) / 2 cm, the centroid of the 100 cm body above its origin
+    x = np.full(32, offset)
+    x[3] += 0.4
+    x[31] += 100.0  # the last frame is never interior, so this must not count
+    velocity = np.zeros(32)
+    velocity[5], velocity[10], velocity[31] = 2.0, -3.0, 900.0
+    acceleration = np.zeros(32)
+    acceleration[12], acceleration[31] = 4.0, 900.0
+    motion = pa.table(
+        {
+            "x_cm": pa.array(x),
+            "velocity_cm_s": pa.array(velocity, mask=np.isin(np.arange(32), [7, 8])),
+            "acceleration_cm_s2": pa.array(acceleration, mask=np.isin(np.arange(32), [8, 20])),
+        }
+    )
+    got = sweep.compare_stored_motion(motion, scenario, SMALL, MotionConfig())
+    assert got.frames_interior == 31
+    assert got.frames_null == 3  # frames 7, 8 and 20: a null velocity or acceleration
+    assert got.position_cm.max_abs == pytest.approx(0.4)
+    assert got.position_cm.rms == pytest.approx(np.sqrt(0.16 / 31))
+    assert got.velocity_cm_s.max_abs == pytest.approx(3.0)
+    assert got.velocity_cm_s.rms == pytest.approx(np.sqrt(13.0 / 29))  # 2 nulls left out
+    assert got.acceleration_cm_s2.max_abs == pytest.approx(4.0)
+    assert got.acceleration_cm_s2.rms == pytest.approx(np.sqrt(16.0 / 29))
+
+
 def test_full_density_check_refuses_when_disk_is_too_small(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -404,9 +436,10 @@ def test_full_density_check_cleans_up_and_reports(tmp_path: Path) -> None:
     identity in test_centroid_identity_for_any_lattice_density.
     """
     result = sweep.full_density_check(frames=190, base_dir=tmp_path, config=SMALL)
-    assert result.report.frames_compared == 190
     assert result.report.frames_interior > 0
-    assert result.report.passed
+    assert np.isfinite(result.report.velocity_cm_s.max_abs)
+    assert np.isfinite(result.report.acceleration_cm_s2.max_abs)
+    assert result.report.position_cm.max_abs < 1.0  # cm: the stored centroid tracks the truth
     assert result.max_centroid_difference_cm == pytest.approx(0.0, abs=1e-9)
     assert list(tmp_path.iterdir()) == []  # temp folders are deleted
 

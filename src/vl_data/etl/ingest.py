@@ -27,7 +27,6 @@ from vl_data.etl.rules import RuleContext, run_rules
 from vl_data.generator.body import cube_lattice
 
 FRAMES_NAME = "frames.parquet"
-GROUND_TRUTH_NAME = "ground_truth.parquet"  # only its manifest hash is used, never the file
 INTEGRITY = "INTEGRITY"  # quarantine code of whole-drive problems that are not VL codes
 _INT32_MAX = 2**31 - 1
 _MAX_TEXT = 300  # characters of any outside text kept in a quarantine message
@@ -99,9 +98,9 @@ def ingest_drive(drive_dir: Path, lake: Lake, etl: EtlConfig) -> IngestResult:
     rejections too.
 
     A good drive writes keypoints (kept frames sorted by frame_id, then YAML keypoint order),
-    then quarantine, then lineage last, each as one partition swap. ground_truth.parquet is
-    hashed by verify_drive but never opened or parsed here; its manifest hash goes into the
-    lineage row. frames_rejected counts quarantine rows that name a file row, so a frame that
+    then quarantine, then lineage last, each as one partition swap. Every file in the manifest
+    is hashed by verify_drive; only frames.parquet is opened, and its manifest hash goes into
+    the lineage row. frames_rejected counts quarantine rows that name a file row, so a frame that
     breaks two rules counts twice. Returns an IngestResult.
     """
     drive = Path(os.path.abspath(drive_dir)).name  # the name given, links not followed
@@ -443,12 +442,10 @@ def _lineage_batch(
 
     The file hashes come from the manifest and are stored only when verify_drive passed.
     """
-    frames_sha = truth_sha = None
+    frames_sha = None
     if manifest is not None and verified:
         entry = manifest.files.get(FRAMES_NAME)
         frames_sha = entry.sha256 if entry else None
-        truth = manifest.files.get(GROUND_TRUTH_NAME)
-        truth_sha = truth.sha256 if truth else None
     version = manifest.schema_version if manifest is not None else None
     if version is not None and not 0 <= version <= _INT32_MAX:
         version = None
@@ -461,7 +458,6 @@ def _lineage_batch(
         status,
         *counts,
         frames_sha,
-        truth_sha,
     ]
     arrays = [
         pa.array([value], type=field.type)

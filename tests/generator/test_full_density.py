@@ -21,8 +21,9 @@ from vl_data.core.schemas import BYTES_PER_POINT, FRAMES_SCHEMA, decode_points, 
 from vl_data.generator import drive as drive_module
 from vl_data.generator import generate, generate_to_disk, write_drive
 from vl_data.generator.body import cube_lattice, place_body
-from vl_data.generator.drive import BATCH_FRAMES, build_ground_truth, iter_frame_batches
+from vl_data.generator.drive import BATCH_FRAMES, iter_frame_batches
 from vl_data.generator.models import Scenario
+from vl_data.generator.motion import integrate_position, speed_profile
 from vl_data.generator.writer import ROW_GROUP_ROWS
 
 ONE_FRAME = {"segments": [{"type": "stop", "duration_s": 0.0625}]}
@@ -99,7 +100,9 @@ def test_every_row_of_a_batch_is_the_placed_body(small_config: Config) -> None:
         }
     )
     batch = next(iter_frame_batches(scenario, small_config))
-    x_cm = build_ground_truth(scenario, small_config).column("x_cm").to_numpy()
+    x_cm = integrate_position(
+        scenario.start.x_cm, speed_profile(scenario, small_config.fps), small_config.fps
+    )  # cm
     lattice = cube_lattice(small_config.body.size_cm, small_config.body.points_per_axis)
     assert batch.num_rows >= 3
     assert x_cm[1] != x_cm[0] and x_cm[2] != x_cm[1]
@@ -125,7 +128,6 @@ def test_batches_are_at_most_batch_frames_and_cover_every_frame(small_config: Co
     assert ids == list(range(120))
     drive = generate(scenario, small_config)
     assert drive.frames.equals(pa.Table.from_batches(batches, schema=FRAMES_SCHEMA))
-    assert build_ground_truth(scenario, small_config).equals(drive.ground_truth)
 
 
 @pytest.mark.parametrize("spec", [SHORT, LONG], ids=["48_frames", "120_frames"])
@@ -136,19 +138,18 @@ def test_generate_and_streaming_writer_give_identical_bytes(
     in_memory = write_drive(generate(scenario, small_config), tmp_path / "a", small_config)
     streamed = generate_to_disk(scenario, small_config, tmp_path / "b")
     assert in_memory.name == streamed.name
-    for name in ("frames.parquet", "ground_truth.parquet", "manifest.json"):
+    for name in ("frames.parquet", "manifest.json"):
         assert file_sha256(in_memory / name) == file_sha256(streamed / name), name
     assert verify_drive(streamed).ok
 
 
 def test_streaming_writer_layout(small_config: Config, tmp_path: Path) -> None:
-    """Row groups of 50 rows, zstd, for both files; the manifest carries the body."""
+    """Row groups of 50 rows, zstd; the manifest carries the body."""
     path = generate_to_disk(Scenario.model_validate(LONG), small_config, tmp_path)
-    for name in ("frames.parquet", "ground_truth.parquet"):
-        meta = pq.ParquetFile(path / name).metadata
-        assert meta.num_rows == 120
-        assert [meta.row_group(i).num_rows for i in range(meta.num_row_groups)] == [50, 50, 20]
-        assert meta.row_group(0).column(0).compression == "ZSTD"
+    meta = pq.ParquetFile(path / "frames.parquet").metadata
+    assert meta.num_rows == 120
+    assert [meta.row_group(i).num_rows for i in range(meta.num_row_groups)] == [50, 50, 20]
+    assert meta.row_group(0).column(0).compression == "ZSTD"
     manifest = read_manifest(path)
     assert manifest.frame_count == 120
     assert manifest.points_per_frame == 1000

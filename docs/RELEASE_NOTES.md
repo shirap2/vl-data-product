@@ -10,11 +10,11 @@ documentation.
 
 A small data product for a vehicle-location signal. It generates a mock drive from a start
 position and a motion profile, stores the point cloud, extracts the vehicle's velocity and
-acceleration from the points alone, and shows the result next to the known truth. The vehicle
+acceleration from the points alone, and stores the result as a queryable motion table. The vehicle
 is a 1 m cube that moves in a straight line, forwards, backwards and stopped, at different
 speeds. All data is synthetic.
 
-Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames, and `evaluate` checks the result against the ground truth and prints PASS or FAIL against tolerances in `config/motion.yaml`. The Python SDK (`VLClient`) and SQL read the lake.
+Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames. The Python SDK (`VLClient`) and SQL read the lake.
 
 Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored centroid position, velocity and acceleration; SQL runs one SELECT over the lake. Apart from the Generate tab, which writes a drive, it only reads the lake.
 
@@ -22,12 +22,12 @@ Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a d
 
 | Part | What it does | Status |
 |---|---|---|
-| Generator | Writes a hashed drive: 16 fps point cloud, ground truth, manifest. Checks itself by recovering the scenario from the data. | Built |
+| Generator | Writes a hashed drive: 16 fps point cloud and manifest. Checks itself by recovering the scenario from the data. | Built |
 | Loader / ETL | Verifies hashes, validates frames with error codes VL-001 to VL-006, keeps 9 keypoints per frame, and writes keypoints, quarantine and lineage tables to a queryable lake. | Built |
-| Use-case algorithm | Computes velocity and acceleration and compares them with ground truth (`motion`, `evaluate`, `VLClient`). | Built |
+| Use-case algorithm | Computes velocity and acceleration into a motion table (`motion`, `VLClient`). | Built |
 | BI | One Streamlit app with four tabs: Generate, Clean, Analyze, SQL. | Built |
 
-## Install and first check (run on 2026-10-23, Windows PowerShell, Python 3.12.6)
+## Install and first check (run on 2026-10-25, Windows PowerShell, Python 3.12.6, fresh clone and new virtual environment)
 
 ```powershell
 python -m venv .venv
@@ -35,7 +35,14 @@ python -m venv .venv
 .venv\Scripts\python.exe -m vl_data --version
 ```
 
-The last command prints `vl_data 0.1.0` and exits with code 0. Running `python -m vl_data` with no
+The last command prints `vl_data 0.1.0` and exits with code 0. The install step took 222 s (measured;
+pip took most packages from its cache and downloaded three (hypothesis, starlette, certifi; the log has "Using cached" and "Downloading" lines), so this is not a cold download time)
+and the run resolved pyarrow 26.0.0, numpy 2.5.4, pandas 3.1.0, pydantic 2.14.1, plotly 7.1.0 and
+streamlit 1.66.1 (measured, `pip freeze` in `.claude/run-proofs/FINAL-DOCS-iter1-fresh-clone.log`,
+local, git-ignored, A28; the pins in `pyproject.toml` are minimums, so a later install may resolve
+newer versions). `.[dev]` adds the test tools (pytest 9.1.1, pytest-cov 7.1.0, hypothesis 6.170.9,
+ruff 0.17.2, mypy 2.4.0; measured, same `pip freeze`); streamlit, plotly and pandas are main
+dependencies. Running `python -m vl_data` with no
 arguments prints the help text and exits with code 2. Python 3.11 or newer is required; only
 3.12 has been tested.
 
@@ -43,8 +50,15 @@ arguments prints the help text and exits with code 2. Python 3.11 or newer is re
 
 Run these with the project's virtual environment active, or call `.venv\Scripts\python.exe` in place of `python`.
 
-Generate the demo drive (1,000 frames, one reversal, two stops). Run on 2026-10-23, it took
-about 1.5 s:
+Generate the demo drive (1,000 frames, one reversal, two stops). The fresh-clone run on 2026-10-25
+took 86.6 s including verification (measured, same log; the 2026-10-24 run on this machine took 81 s).
+This Usage section owns the measured run figures; other documents point here. The fresh-clone check
+was run twice. Run 1 (`FINAL-DOCS-iter1-fresh-clone-run1.log` and `FINAL-DOCS-iter1-fresh-clone.log`
+in `.claude/run-proofs/`, local, git-ignored, A28) gives every time of the 2026-10-25 fresh-clone check quoted in these notes (the 10.35 s of the Generate-tab UI tests comes from `TASK-7-1-1-iter1-ui-tests.log`);
+the 81 s of 2026-10-24 comes from `FULL-DENSITY-iter2.log` (`duration_s=81`). Run 2
+(`FINAL-DOCS-iter2-fresh-clone.log`) also passed all steps, but its
+timings were unreliable and
+are not used:
 
 ```powershell
 python -m vl_data generate --scenario src/vl_data/generator/scenarios/demo.yaml --out data/raw
@@ -62,9 +76,13 @@ manifest: verified
 ```
 
 The folder `data/raw/bf394b9bfb42/` then holds `frames.parquet` (287,134,433 bytes, zstd),
-`ground_truth.parquet` (30,929 bytes) and `manifest.json` (1,454 bytes). The run (2026-10-24, Python 3.12.6, pyarrow 26.0.0, numpy 2.5.4) took 81 s including verification; the 1,000-frame drive holds 12 GB of points before compression. `--out` is optional; without
-it the drive goes to `raw_dir` from `config/default.yaml` (or `VL_RAW_DIR`). Generating the same
-scenario again replaces the folder with identical files.
+and `manifest.json` (1,312 bytes). The sizes are from a run on 2026-10-27 (measured); earlier versions also wrote a `ground_truth.parquet` of 30,929 bytes. The 1,000-frame drive holds 12 GB
+(here 12,000,000,000 bytes) of
+points before compression (computed: 1,000 frames x 12,000,000 bytes per frame). `--out` is optional;
+without it the drive goes to `raw_dir` from `config/default.yaml` (or `VL_RAW_DIR`). Generating the same
+scenario again replaces the folder with one clean folder that passes `verify` (test
+`test_rewrite_replaces_folder` in `tests/generator/test_generator.py`; the files have the same bytes
+on the same pyarrow version, from the code and A63, not run in the fresh-clone check).
 
 Check a drive against its manifest:
 
@@ -72,13 +90,17 @@ Check a drive against its manifest:
 python -m vl_data verify data/raw/bf394b9bfb42
 ```
 
-This prints `manifest: verified` and exits with code 0. After one byte of `ground_truth.parquet`
-was changed in a copy, it printed `changed: ground_truth.parquet (sha256 mismatch)` on stderr and
-exited with code 1. A missing or invalid scenario file gives a one-line `error: ...` message and
-exit code 1.
+This prints `manifest: verified` and exits with code 0. After one byte of `frames.parquet`
+was changed in a copy of the demo drive (byte 1,000 flipped), it printed
+`changed: frames.parquet (sha256 mismatch)` on stderr and exited with code 1 (measured on 2026-10-27). A missing scenario file (`generate` and `roundtrip`) or an
+invalid one (`generate`) gives a one-line `error: ...` message and exit code 1 (`generator/cli.py` writes it to stderr; the tests mostly check the exit code and the message text, not the stream: tests
+`test_generate_missing_scenario`, `test_generate_invalid_scenario` and
+`test_roundtrip_missing_scenario_exits_1` in `tests/generator/test_cli.py`; not run in the
+fresh-clone check).
 
-Check that the generator can read its own drive back (the two-way check). Run on 2026-10-24,
-it took 1.41 s wall time and writes nothing to disk (log: `.claude/run-proofs/TASK-5-measure.log`, local, git-ignored (A28)):
+Check that the generator can read its own drive back (the two-way check). Run on 2026-10-25,
+it took 54.5 s wall time at full density (1,000,000 points per frame; measured in the fresh-clone run on
+2026-10-25, same log) and writes nothing to disk:
 
 ```powershell
 python -m vl_data roundtrip --scenario src/vl_data/generator/scenarios/demo.yaml
@@ -94,13 +116,12 @@ max_end_speed_error_cm_s: 24.4
 round trip OK
 ```
 
-The same log records the exit code (0) and the demo-drive errors against ground truth: maximum centroid
-x error 0.498 cm and maximum velocity error 15.0 cm/s (`.claude/run-proofs/TASK-5-measure.py`).
-
+The fresh-clone log records the exit code (0) and these five printed lines. They are the full-density
+figures (2026-10-25). 
 The limits are 6 frames, 8 frames and 40 cm/s (`tolerances` in `config/default.yaml`). If a
-check fails, the segment line and one line per problem are printed (problems on stderr) and the
-exit code is 1. A missing or invalid scenario file gives a one-line `error: ...` message and
-exit code 1.
+check fails, the segment line and one line per problem are printed (problems on stderr according to `generator/cli.py`) and the
+exit code is 1 (test `test_roundtrip_failed_comparison_exits_1` in `tests/generator/test_cli.py`,
+which uses a stand-in failed comparison; not run in the fresh-clone check).
 
 The check is only tested for segments of 32 frames (2 s) or more (A14). For every segment under
 32 frames the command prints one line such as `warning: segment 1 is 16 frames; ...` on stderr
@@ -109,7 +130,6 @@ before the result. The demo prints no warning, because its shortest segment is e
 A scenario file looks like this:
 
 ```yaml
-seed: 0
 start: {x_cm: 0, y_cm: 0, z_cm: 0, speed_cm_s: 0}
 segments:
   - {type: stop, duration_s: 2.0}
@@ -118,13 +138,15 @@ segments:
   - {type: stop, duration_s: 4.0}
 ```
 
+The optional `seed` key (a whole number, default 0) is still accepted in a scenario file.
+
 Speeds are cm/s and positive means forward. `move` changes speed in a straight line from the
 current speed to `end_speed_cm_s`. Durations must be a whole number of frames (a multiple of
 1/16 s).
 
 Generate a drive from the browser (the Generate tab). Run on 2026-10-25 (Windows, Python 3.12.6,
-Streamlit 1.66.1); only the server start and an HTTP check were run, the page was not opened in a
-browser by hand:
+Streamlit 1.66.1); only the server start and an HTTP check were run: the server answers, the page was
+not rendered or opened in a browser by hand:
 
 ```powershell
 python -m streamlit run src/vl_data/generator/ui/generate_app.py --server.headless true --server.address 127.0.0.1 --server.port 8765
@@ -132,9 +154,9 @@ python -m streamlit run src/vl_data/generator/ui/generate_app.py --server.headle
 
 `--server.address 127.0.0.1` binds the page to this computer only; `--server.port 8765` is the port
 that run used. Streamlit printed `Uvicorn server started on 127.0.0.1:8765` and `URL: http://127.0.0.1:8765`;
-the page answered with HTTP 200 and `/_stcore/health` answered `ok` (measured, log
-`.claude/run-proofs/TASK-7-iter3-server.log`, local, git-ignored, A28). The page has a
-start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`, `seed`; this description of the page comes from the code, not from a browser run), a segment table that starts with the
+the server answered `GET /` with HTTP 200 and `/_stcore/health` with `ok` (measured, in the fresh-clone
+log; an earlier run: `.claude/run-proofs/TASK-7-iter3-server.log`, local, git-ignored, A28). The page has a
+start form (`x_cm`, `y_cm`, `z_cm`, `speed_cm_s`; there is no seed box). The seed is hidden and is 0 for drives made in the tab (a scenario file can still set it). This description of the page comes from the code, not from a browser run. The page also has a segment table that starts with the
 demo rows (`type`, `duration_s` in steps of 0.0625 s, `end_speed_cm_s`; rows can be added and
 deleted), a speed-against-time plot, and a Generate button. Click Generate and the tab first works out the target folder (the first 12 characters of the scenario hash under `raw_dir`). If
 that folder already holds a drive that passes the full `verify_drive` check (every file is hashed again, shown in a
@@ -147,16 +169,18 @@ it shows a warning such as "This drive has 1000 frames, about 12,000,000,000 byt
 data)" (1,000 frames x 12,000,000 bytes at full density, computed; about 12,000 bytes per frame, 12,000,000 bytes for 1,000 frames, at the
 10-points-per-axis test body, computed). It then writes the drive under `raw_dir` with the same function
 the `generate` command uses, and shows the folder, the scenario hash and the frame count. A
-wrong form or table shows a red error and no plot. A bad cell (blank, text, true/false, not a number, infinite, or a duration
-that is not a whole number of frames) names the segment and the field, for example "segment 0 duration_s must be a finite
-number"; a bad start field names the field ("start x_cm must be a finite number"); a cleared seed says "seed is blank; enter a
-whole number" and a seed that is not a number says "seed must be a whole number"; an empty table or a table over 2,000 frames
+wrong form or table shows a red error and no plot. A bad cell (blank, text, true/false, not a number or infinite) names the segment and the field, for example "segment 0 duration_s must be a finite
+number"; a bad start field names the field ("start x_cm must be a finite number"); a duration that
+is not a whole number of frames gets the scenario model's own message after "Invalid scenario:" (for example
+"duration_s 1.03 s is not a whole number of frames", from `generator/models.py`, worded differently from the cell
+messages); an empty table or a table over 2,000 frames
 gets its own message. If the target folder is a symbolic link or a plain file, the tab does not call it
-"already generated"; it shows the writer's error and changes nothing (A76). Two Generate clicks
+"already generated"; it shows the writer's error and changes nothing (A76). The disk guard runs
+before the writer, so with a full disk the user sees the disk error first. Two Generate clicks
 at the same time for a drive that does not exist yet can still both write (the race is not closed, A79). The tab is tested with Streamlit's test runner
 (`tests/generator/test_ui.py`, 49 tests, 48 passed and 1 skipped, in 10.35 s, measured in
 `.claude/run-proofs/TASK-7-1-1-iter1-ui-tests.log`; the one skip is the real-symlink test, which needs the Windows symbolic-link right
-and has a no-rights stand-in that ran; the whole suite was 332 tests, 331 passed and 1 skipped, 100.00% coverage, measured in `TASK-7-1-1-iter1-suite.log`; both logs are local, git-ignored, A28), which cannot edit the table, so editing a row
+and has a no-rights stand-in that ran; the whole suite was 332 tests, 331 passed and 1 skipped, 100.00% coverage, measured in `TASK-7-1-1-iter1-suite.log`; the fresh-clone run on 2026-10-25 gave the same: 331 passed, 1 skipped in 32.41 s, 100% coverage of 1,037 statements, with ruff and mypy clean (measured, `FINAL-DOCS-iter1-fresh-clone.log`); the logs are local, git-ignored, A28), which cannot edit the table, so editing a row
 by hand is not covered by a test.
 
 Load the drive into the lake:
@@ -191,25 +215,20 @@ exit 0, `status: ok`, `frames_kept: 1000`, `frames_quarantined: 0`, `keypoint_ro
 wall-clock time for generate plus ingest (one run, measured). Three tests need an OS or account
 that can create symlinks or odd folder names and were skipped on this machine.
 
-### Motion and evaluation (Module 3)
+### Motion (Module 3)
 
-Compute the centroid velocity and acceleration of an ingested drive, then compare them with the
-ground truth:
+Compute the centroid velocity and acceleration of an ingested drive:
 
 ```powershell
 python -m vl_data motion <hash12> --lake-dir warehouse
-python -m vl_data evaluate data/raw/<hash12> --lake-dir warehouse
 ```
 
 `motion` prints `drive`, `frames_read`, `frames_estimated` and `frames_null` (counts of frames; a
-frame is null when its velocity or acceleration has no estimate). `evaluate` prints the scenario
-hash, the frames compared, interior and null, and the interior max and RMS error of position
-(cm), velocity (cm/s) and acceleration (cm/s^2) with their tolerances and the all-frame
-velocity and acceleration errors, then `result: PASS` or `result: FAIL`. Both use the exit codes
-of `ingest` (0 done or passed, 1 refused, failed or a tolerance exceeded, 2 usage or
-configuration error, 3 a file could not be read or written; inside `evaluate` a read failure during the comparison is reported as a failure, code 1) and the same lake folder rule
-(`--lake-dir`, else `VL_LAKE_DIR`, `config/etl.yaml`, `warehouse`). Window, order and
-tolerances are in `config/motion.yaml`. The failures are listed in `docs/USE_CASE_ERRORS.md`.
+frame is null when its velocity or acceleration has no estimate). It uses the exit codes of
+`ingest` (0 done, 1 refused or failed, 2 usage or configuration error, 3 a file could not be read
+or written) and the same lake folder rule (`--lake-dir`, else `VL_LAKE_DIR`, `config/etl.yaml`,
+`warehouse`). Window and order are in `config/motion.yaml`. The failures are listed in
+`docs/USE_CASE_ERRORS.md`.
 
 Real run (2026-10-25, full density: demo scenario, 1,000 frames x 1,000,000 points; times are
 wall-clock, one machine). All exit codes were 0.
@@ -220,10 +239,7 @@ wall-clock, one machine). All exit codes were 0.
 | `ingest <work>/raw/bf394b9bfb42 --lake-dir <work>/lake` | 56 s | `status: ok`, `frames_kept: 1000`, `keypoint_rows: 9000` |
 | `motion bf394b9bfb42 --lake-dir <work>/lake` | 1 s | `frames_read: 1000 frames`, `frames_estimated: 1000 frames`, `frames_null: 0 frames` |
 | `motion` again | 2 s | same; the motion partition file hash did not change |
-| `evaluate <work>/raw/bf394b9bfb42 --lake-dir <work>/lake` | 2 s | `frames_interior: 880 frames`, position 0.498 cm, velocity 3.520 cm/s, acceleration 4.378 cm/s^2 (interior max), `result: PASS` |
-| `pytest tests/ -q` | 66 s | 851 passed, 4 skipped |
-
-The full `evaluate` output is in `docs/ARCHITECTURE.md` (Module 3, Command line).
+| `pytest tests/ -q` | 66 s | 851 passed, 4 skipped (before the evaluation was removed; on 2026-10-27, with the ground truth removed from every module, the suite gives 798 passed, 4 skipped in 77 s) |
 
 Query the motion table from Python. This example was run on 2026-10-25 (measured) with the small body
 (100 cm cube, 10 points per axis) and the demo scenario, in a scratch lake. It opens your own lake
@@ -318,8 +334,8 @@ covers. The page was not opened in a browser by hand, and the full-density demo 
 ## Known issues
 
 - No rotation. The vehicle never turns or yaws. A real vehicle rotates.
-- A drive at full density is large: 12 GB of points per 1,000 frames before compression (about 287 MB on disk with zstd), and generating or checking it takes more than a minute. `generate()` and `write_drive` hold a whole drive in memory; use the `generate` command (it streams). A drive over 1 GiB of points (more than 89 frames at full density) is refused by `generate()` and `write_drive`.
-- A scenario may have at most 2,000 frames (125 s at 16 fps). At full density that is about 0.6 GB on disk and about 2.5 minutes to generate (scaled from the 1,000-frame run, not run). The cap is a validation limit in `generator.models`.
+- A drive at full density is large: 12 GB (12,000,000,000 bytes) of points per 1,000 frames before compression (computed; 287 MB on disk with zstd, measured), and generating and round-tripping it take about 87 s (generate) and 55 s (round trip), measured in the fresh-clone run 1 on 2026-10-25. `generate()` and `write_drive` hold a whole drive in memory; use the `generate` command (it streams). A drive over 1 GiB (2^30 = 1,073,741,824 bytes) of points (more than 89 frames at full density) is refused by `generate()` and `write_drive`.
+- A scenario may have at most 2,000 frames (125 s at 16 fps). At full density that is about 0.6 GB on disk and about 2.5 minutes to generate (computed: twice the 75.1 s of the 1,000-frame write in `FULL-DENSITY-measure.log`, not run). The cap is a validation limit in `generator.models`.
 - Motion is one-dimensional (along x).
 - Values are rounded to whole centimetres, which adds small errors. Per-frame acceleration is too
   noisy to use directly, so it is fitted over windows.
@@ -343,11 +359,10 @@ covers. The page was not opened in a browser by hand, and the full-density demo 
 - Per-frame acceleration is not checked by any loader rule.
 - The point-cloud check (VL-004) allows for the 1 cm rounding wobble of whole-centimetre points. A single point moved by exactly 1 cm is not detected; a move of 2 cm or more is.
 - The loader decides which frame is a teleport by comparing positions. If the first three clean frames of a drive are themselves inconsistent, the loader trusts the most tightly agreeing pair; a drive that starts with several bad frames may be judged wrongly.
-- Motion (Module 3): the motion table is not refreshed by a new ingest. After re-ingesting a drive, run `motion` again; until then `evaluate` stops with an error if the frame count changed, and compares stale values if it did not.
+- Motion (Module 3): the motion table is not refreshed by a new ingest. After re-ingesting a drive, run `motion` again; until then the motion table holds the values of the earlier ingest.
 - `VLClient.sql` runs any single SELECT, including `read_parquet` on any file the user can read. It is a local single-user tool; do not expose it to untrusted input (assumption M3-A10).
-- The 16-frame least-squares fit smooths speed changes and the ends of a clip: frames within 8 frames of a change of acceleration, and the first and last 8 frames, carry larger errors (all-frame acceleration max 55.678 cm/s^2 against 4.378 cm/s^2 on interior frames, measured on the demo drive; assumption M3-A29).
-- `tools/motion_sweep.py` is a measuring tool whose logic is not type-checked by mypy.
-- `evaluate` hashes every file of the drive before it compares anything (`verify_drive`). The points are 12 GB per 1,000 full-density frames uncompressed; on disk they are compressed, and the measured `evaluate` took 2 s on the full-density demo drive. Noisier data would take longer (assumption M3-A33).
+- The 16-frame least-squares fit smooths speed changes and the ends of a clip: frames within 8 frames of a change of acceleration, and the first and last 8 frames, carry larger errors (all-frame acceleration max 55.678 cm/s^2 against 4.378 cm/s^2 on interior frames, a development measurement against the in-memory truth of the demo drive, from `tools/motion_sweep.py`; assumption M3-A29).
+- `tools/motion_sweep.py` is a developer measuring tool whose logic is not type-checked by mypy. It compares the estimator with the in-memory truth of generated drives; the product does not.
 - Single machine, CPU only.
 - Module 4, SQL tab: it runs any single SELECT through `VLClient.sql`, which can also read any file path on the machine through `read_parquet` (a DuckDB function that reads a Parquet file from any path); this is a local single-user tool, and production would use a locked connection. The "local single-user" premise depends on the app listening on 127.0.0.1 only (this computer): started on `0.0.0.0` (all network interfaces) or behind a port forward, anyone who can reach the port could use the SQL tab, which has no login. The wider reach below comes from reading the DuckDB defaults and documentation and was NOT run: other file types (`read_csv`, `read_json`, `read_text`, glob patterns), possible network reads through extension autoload (DuckDB loading an add-on such as `httpfs` by itself when a query needs it), Windows UNC paths (a UNC path is a Windows network-share path; opening one can send a login hash to that share), environment variables and secrets through `getenv` (a DuckDB function that returns an environment variable) and `duckdb_secrets()`, and no memory, thread or time limit. `COPY`, `INSERT`, `CREATE`, `ATTACH`, `INSTALL`, `SET` and `PRAGMA` are refused as non-SELECT (by the statement-type check in the SDK, read from the code; the tests cover DROP, COPY and a two-statement query, and check that the lake files are unchanged). No writes were found by reading, not by a run. The 10,000-row cap limits the display only; the whole result is loaded first. You accepted the wider reach on 2026-10-26 on condition that it is documented and a follow-up is written: `module4-TASK-4-1.md`.
 - Module 4: the SQL box text is not refreshed when the selected drive changes (pick the example again), and the Run result is shown only in the run after the click, so any other widget action clears it.
@@ -362,6 +377,6 @@ clip candidates, Apache Iceberg as the table format, a REST API, streaming inges
 Kafka), parallel loading of many drives, a data-quality report function, a Spark backend for many
 drives, an object-store profile, scheduled runs, and delta-encoded storage.
 
-Module 3 follow-ups: a stored evaluation table (today the report is printed and not stored), event detection on the motion table, a REST API over the SDK, and a Kalman or RTS smoother as an alternative to the window fit.
+Module 3 follow-ups: event detection on the motion table, a REST API over the SDK, and a Kalman or RTS smoother as an alternative to the window fit.
 
 Module 4 follow-ups: a locked SQL connection (external access off, extension autoload off, a memory limit), and a REST service if one is needed. The written follow-up file (in `.claude/plans/followups/`) is `module4-TASK-4-1.md` (SQL reach).

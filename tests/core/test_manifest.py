@@ -25,7 +25,7 @@ def _make_drive(tmp_path: Path) -> Path:
     drive = tmp_path / "drive"
     drive.mkdir()
     (drive / "frames.parquet").write_bytes(b"frames" * 100)
-    (drive / "ground_truth.parquet").write_bytes(b"truth" * 50)
+    (drive / "extra.parquet").write_bytes(b"extra" * 50)
     manifest = build_manifest(
         drive, drive_hash(SCENARIO, BODY.model_dump()), SCENARIO, 16, 16, 1000, BODY
     )
@@ -55,21 +55,21 @@ def test_verify_detects_changed_byte(tmp_path: Path) -> None:
 
 def test_verify_detects_size_change(tmp_path: Path) -> None:
     drive = _make_drive(tmp_path)
-    with (drive / "ground_truth.parquet").open("ab") as f:
+    with (drive / "extra.parquet").open("ab") as f:
         f.write(b"x")
     result = verify_drive(drive)
     assert not result.ok
-    assert any("ground_truth.parquet" in p and "size" in p for p in result.problems)
+    assert any("extra.parquet" in p and "size" in p for p in result.problems)
 
 
 def test_verify_detects_missing_and_extra(tmp_path: Path) -> None:
     drive = _make_drive(tmp_path)
-    (drive / "ground_truth.parquet").unlink()
+    (drive / "extra.parquet").unlink()
     (drive / "stray.txt").write_text("hi", encoding="utf-8")
     (drive / "subdir").mkdir()
     result = verify_drive(drive)
     assert not result.ok
-    assert "missing: ground_truth.parquet" in result.problems
+    assert "missing: extra.parquet" in result.problems
     assert "extra: stray.txt" in result.problems
     assert "extra: subdir" in result.problems
     assert len(result.problems) == 3
@@ -108,7 +108,7 @@ def test_build_manifest_contents(tmp_path: Path) -> None:
     assert manifest.seed == 0
     assert (manifest.fps, manifest.frame_count, manifest.points_per_frame) == (16, 16, 1000)
     assert manifest.scenario == SCENARIO
-    assert list(manifest.files) == ["frames.parquet", "ground_truth.parquet"]
+    assert list(manifest.files) == ["extra.parquet", "frames.parquet"]
     entry = manifest.files["frames.parquet"]
     assert entry.bytes == 600
     assert entry.sha256 == file_sha256(drive / "frames.parquet")
@@ -344,3 +344,34 @@ def test_manifest_with_huge_body_value_is_rejected_before_cubing(tmp_path: Path)
     assert not result.ok
     assert "cannot read manifest.json" in result.problems[0]
     assert "points_per_axis" in result.problems[0]
+
+
+def _write_manifest_for(drive: Path) -> None:
+    """Write the manifest of the files now in drive (a 16-frame, 1,000-point drive)."""
+    drive_id = drive_hash(SCENARIO, BODY.model_dump())
+    write_manifest(build_manifest(drive, drive_id, SCENARIO, 16, 16, 1000, BODY), drive)
+
+
+def test_old_drive_with_a_ground_truth_file_still_verifies(tmp_path: Path) -> None:
+    """A drive written before the ground truth was removed lists that file and still verifies.
+
+    The manifest lists every file that is present, so the loader and verify_drive need no
+    special case for a file that newer drives no longer write.
+    """
+    drive = tmp_path / "old"
+    drive.mkdir()
+    (drive / "frames.parquet").write_bytes(b"frames" * 100)
+    (drive / "ground_truth.parquet").write_bytes(b"truth" * 50)
+    _write_manifest_for(drive)
+    assert verify_drive(drive).ok
+    assert sorted(read_manifest(drive).files) == ["frames.parquet", "ground_truth.parquet"]
+
+
+def test_new_drive_with_only_frames_verifies(tmp_path: Path) -> None:
+    """A drive that holds only frames.parquet and the manifest verifies."""
+    drive = tmp_path / "new"
+    drive.mkdir()
+    (drive / "frames.parquet").write_bytes(b"frames" * 100)
+    _write_manifest_for(drive)
+    assert verify_drive(drive).ok
+    assert list(read_manifest(drive).files) == ["frames.parquet"]
