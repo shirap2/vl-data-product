@@ -14,8 +14,6 @@ frames per second. These are the use cases considered for it. One is implemented
 
 ## Why use case 1
 
-- **It has natural ground truth.** The generator knows the exact motion, so correctness can be
-  measured instead of argued.
 - **The warehouse stays generic.** Position per frame is useful to every other use case in the
   table, so the stored tables do not depend on this one.
 - **It is the base of the others.** Cases 2 to 6 all start from velocity and acceleration.
@@ -23,6 +21,8 @@ frames per second. These are the use cases considered for it. One is implemented
 ## What the implemented use case delivers
 
 A user can ask, for any generated drive: how fast was the vehicle moving at each frame
-(signed, so backward is negative), and how fast was that speed changing. The result can be
-compared with the ground truth for the same scenario, which is how the extraction is shown to
-be correct.
+(signed, so backward is negative), and how fast was that speed changing. The result is stored
+in the motion table and can be queried with SQL or `VLClient`. The extraction is checked by
+development measurements, not by the product: Module 3's sweep tool measures the estimator on
+generated drives, and the generator's two-way check (`roundtrip`) shows that the scenario can be
+recovered from the frames.
