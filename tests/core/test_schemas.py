@@ -6,7 +6,6 @@ import pytest
 
 from vl_data.core.schemas import (
     FRAMES_SCHEMA,
-    GROUND_TRUTH_SCHEMA,
     SCHEMA_VERSION,
     decode_points,
     encode_points,
@@ -56,15 +55,6 @@ def test_schemas() -> None:
     assert FRAMES_SCHEMA.names == ["frame_id", "timestamp_ns", "points"]
     assert FRAMES_SCHEMA.field("points").type == pa.binary()
     assert FRAMES_SCHEMA.field("frame_id").type == pa.int64()
-    assert GROUND_TRUTH_SCHEMA.names == [
-        "frame_id",
-        "timestamp_ns",
-        "x_cm",
-        "velocity_cm_s",
-        "acceleration_cm_s2",
-    ]
-    assert GROUND_TRUTH_SCHEMA.field("x_cm").type == pa.float64()
-    assert GROUND_TRUTH_SCHEMA.field("timestamp_ns").type == pa.int64()
 
 
 def test_encode_points_layout_independent() -> None:

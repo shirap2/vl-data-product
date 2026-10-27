@@ -48,7 +48,7 @@ def test_app_renders_without_exception(small_config: Config, tmp_path: Path) -> 
     at = _run(_small(small_config, tmp_path))
     assert not at.exception
     labels = [n.label for n in at.number_input]
-    assert labels == ["x_cm", "y_cm", "z_cm", "speed_cm_s", "seed"]
+    assert labels == ["x_cm", "y_cm", "z_cm", "speed_cm_s"]  # no seed box: the seed is hidden
     assert at.button[0].label == "Generate"
     assert len(at.get("plotly_chart")) == 1
     assert len(at.dataframe) == 1
@@ -62,13 +62,13 @@ def test_rows_to_scenario_validates() -> None:
         {"type": "move", "duration_s": 2.0, "end_speed_cm_s": 100.0},
         {"type": "move", "duration_s": 1.0, "end_speed_cm_s": 0.0},
     ]
-    scenario = rows_to_scenario(START, rows, 3)
-    assert scenario.seed == 3
+    scenario = rows_to_scenario(START, rows)
+    assert scenario.seed == 0  # the hidden default
     assert [type(s) for s in scenario.segments] == [MoveSegment, MoveSegment]
     with pytest.raises(ValueError, match="duration_s"):
-        rows_to_scenario(START, [{"type": "move", "duration_s": 1.03, "end_speed_cm_s": 5.0}], 0)
+        rows_to_scenario(START, [{"type": "move", "duration_s": 1.03, "end_speed_cm_s": 5.0}])
     with pytest.raises(ValueError, match="more than"):
-        rows_to_scenario(START, [{"type": "stop", "duration_s": 200.0}], 0)
+        rows_to_scenario(START, [{"type": "stop", "duration_s": 200.0}])
 
 
 def test_rows_to_scenario_stop_rows_drop_end_speed() -> None:
@@ -77,7 +77,7 @@ def test_rows_to_scenario_stop_rows_drop_end_speed() -> None:
         {"type": "stop", "duration_s": 1.0, "end_speed_cm_s": math.nan},
         {"type": "stop", "duration_s": 1.0, "end_speed_cm_s": 50.0},
     ]
-    scenario = rows_to_scenario(START, rows, 0)
+    scenario = rows_to_scenario(START, rows)
     assert all(isinstance(s, StopSegment) for s in scenario.segments)
     assert [s.duration_s for s in scenario.segments] == [1.0, 1.0]
 
@@ -104,22 +104,14 @@ def test_rows_to_scenario_stop_rows_drop_end_speed() -> None:
 def test_rows_to_scenario_rejects_blank_and_empty(rows: list[dict[str, Any]], text: str) -> None:
     """Blank, NaN, unknown and missing cells and an empty table raise a clear ValueError."""
     with pytest.raises(ValueError, match=text):
-        rows_to_scenario(START, rows, 0)
+        rows_to_scenario(START, rows)
 
 
 def test_rows_to_scenario_rejects_blank_start() -> None:
     """A blank start value raises a clear ValueError."""
     rows = [{"type": "stop", "duration_s": 1.0, "end_speed_cm_s": math.nan}]
     with pytest.raises(ValueError, match="x_cm"):
-        rows_to_scenario({**START, "x_cm": math.nan}, rows, 0)
-
-
-@pytest.mark.parametrize("seed", [None, math.nan, math.inf, [1], {"a": 1}])
-def test_rows_to_scenario_rejects_bad_seed(seed: Any) -> None:
-    """A cleared seed box (None), NaN or inf is a ValueError naming the seed, never TypeError."""
-    rows = [{"type": "stop", "duration_s": 1.0}]
-    with pytest.raises(ValueError, match="seed"):
-        rows_to_scenario(START, rows, seed)
+        rows_to_scenario({**START, "x_cm": math.nan}, rows)
 
 
 def test_rows_to_scenario_accepts_numpy_numbers() -> None:
@@ -128,11 +120,23 @@ def test_rows_to_scenario_accepts_numpy_numbers() -> None:
         {"type": "move", "duration_s": np.float64(2.0), "end_speed_cm_s": np.float32(100.0)},
     ]
     start = {k: np.float64(v) for k, v in START.items()}
-    seed: Any = np.int64(7)
-    scenario = rows_to_scenario(start, rows, seed)
-    assert scenario.seed == 7
+    scenario = rows_to_scenario(start, rows)
     assert type(scenario.start.x_cm) is float
     assert type(scenario.segments[0].duration_s) is float
+
+
+def test_tab_has_no_seed_widget(small_config: Config, tmp_path: Path) -> None:
+    """Only the 4 start fields are number inputs; no widget is labelled seed."""
+    at = _run(_small(small_config, tmp_path))
+    assert not at.exception
+    assert len(at.number_input) == 4
+    assert "seed" not in " ".join(str(el.value) for el in at.markdown).lower()
+    assert len(at.text_input) == 0
+    assert len(at.slider) == 0
+    assert len(at.checkbox) == 0
+    assert len(at.selectbox) == 0
+    for kind in ("text_area", "radio", "multiselect", "date_input", "number_input", "button"):
+        assert all("seed" not in str(getattr(w, "label", "")).lower() for w in at.get(kind))
 
 
 def test_preview_figure_values(small_config: Config) -> None:
@@ -211,7 +215,7 @@ def test_bad_table_shows_error(
     The real parsing is covered by the rows tests and by test_real_bad_row_shows_error.
     """
 
-    def bad(start: dict[str, float], rows: list[dict[str, Any]], seed: int) -> Scenario:
+    def bad(start: dict[str, float], rows: list[dict[str, Any]]) -> Scenario:
         raise ValueError("segment 0: end_speed_cm_s is blank")
 
     monkeypatch.setattr("vl_data.generator.ui.generate_tab.rows_to_scenario", bad)

@@ -20,17 +20,15 @@ DECISIONS
 - API: Python SDK (VLClient) + SQL. No web service (FastAPI is "coming soon").
   Confirmed by the user on 2026-10-23. VLClient is built in Module 3 and reads through
   core/lake.py, which Module 2 builds.
-- Ground truth is stored outside the warehouse. Since 2026-10-26 nothing in the product reads
-  it (the evaluation was removed).
 - Every file is hashed (SHA-256). manifest.json lists the scenario hash and the hash of
   every file. A lineage table links scenario hash -> file hashes -> row counts, so data
-  can be tied to its scenario and checked against the manifest.
+  can be tied to its scenario.
 - Quality: Typer CLI, pytest + hypothesis, ruff, mypy, src layout, Python 3.11,
   Windows PowerShell (python -m ... only).
 
 OVERALL SHAPE
  config/*.yaml -> core/config.py (pydantic)
- [1 GENERATOR] -> data/raw/<hash12>/{frames.parquet, ground_truth.parquet, manifest.json}
+ [1 GENERATOR] -> data/raw/<hash12>/{frames.parquet, manifest.json}
    -> [2 ETL] (verify hashes, validate VL-001..006, reduce to keypoints) -> lake
    -> [3 USE-CASE] (velocity, acceleration from the lake) -> lake
    -> SDK (+SQL) -> [4 BI: one Streamlit app, 3 tabs]
@@ -48,7 +46,7 @@ MODULE 1: DATA GENERATOR
 - Output: full point cloud per frame (1 m cube, 100x100x100 lattice = 1,000,000 points,
   1 cm apart, from 0 to 99 cm, fixed order, int32 cm, 16 fps,
   timestamp_ns = frame_id * 62,500,000),
-  ground_truth.parquet (per-frame x position, velocity, acceleration), manifest.json.
+  and manifest.json.
 - Tech: numpy, pydantic, PyYAML, PyArrow, hashlib, Typer.
 - UI: minimal form in the Streamlit Generate tab (start values, editable segment table,
   preview plot, Generate button). CLI calls the same function.
@@ -127,7 +125,8 @@ DECISIONS LOG (plan-loop for Module 1, 2026-10-23)
 - The project skeleton (pyproject.toml, src layout, tooling, YAML config loader) is part
   of the Module 1 plan.
 - Noise: out of scope.
-- Ground truth: per-frame x position, velocity and acceleration. No event labels.
+- Ground truth: none. The assignment does not ask for it, so the generator writes no ground-truth file
+  and no evaluation exists (decision of 2026-10-26, done in Modules 1 to 4 on 2026-10-27).
 - UI scope for Module 1: the Generate tab only, as a self-contained function with a small
   standalone runner. The three-tab shell is built in Module 4.
 - Approved extra sources: official docs of pydantic, PyYAML, Typer, hypothesis, Python
@@ -145,8 +144,8 @@ DECISIONS LOG (plan-loop for Module 1, 2026-10-23)
 - Start speed: scenario start block has speed, default 0 (the drive starts at rest).
 - Durations: seconds, validated to whole frames.
 
-MEASURED (before the full-density change; throwaway script, 1000-frame demo, 10x10x10
-integer lattice, float positions
+MEASURED ON THE 10x10x10 LATTICE, BEFORE THE FULL-DENSITY CHANGE (history; NOT re-measured at
+full density; throwaway script, 1000-frame demo, 10x10x10 integer lattice, float positions
 rounded with rint; planar variant, 1-D numbers re-measured in the plan)
 - Position error max 0.66 cm (bound 0.87 cm). Speed error per frame max 17.6 cm/s (bound
   22.6). Acceleration error per frame max 462 cm/s^2 (bound 724), larger than a -150 cm/s^2
@@ -166,22 +165,32 @@ FULL DENSITY (user decision, 2026-10-24)
   999,999 (compute them from cube_lattice, do not hard-code). Module 2 picks keypoints by
   these indices; VL-004 (one point removed) is 999,999 points = 11,999,988 bytes.
 - Storage: zstd instead of snappy (a 2-frame test: snappy 8,048,769 bytes, zstd 549,552
-  bytes; to be repeated on a real drive). One Arrow binary array holds at most
+  bytes). Repeated on the real 1,000-frame demo drive (2026-10-24, measured):
+  snappy 4,024,944,648 bytes, zstd 287,134,433 bytes for frames.parquet. One Arrow binary
+  array holds at most
   2,147,483,647 bytes = 178 full frames, so frames are built and written in batches of
   about 50 frames and streamed to the parquet file (row groups of about 50 rows). The
-  in-memory generate() stays for small drives and tests.
-- Demo: keep the 1,000-frame demo at full density (about 12 GB raw, calculated). Time,
-  peak memory and size on disk are measured first; if unacceptable, the user decides.
+  in-memory generate() and write_drive stay for small drives and tests; they refuse a drive
+  over 1 GiB of points (MAX_IN_MEMORY_BYTES, more than 89 frames at full density), and
+  generate_to_disk (the CLI and the Generate tab) streams without that limit.
+- Demo: keep the 1,000-frame demo at full density (about 12 GB raw, computed: 1,000 frames
+  x 12,000,000 bytes; a scenario may have at most 2,000 frames, about 24 GB raw). Measured
+  2026-10-24: 75.1 s, peak working set 2,859 MiB (scratch script); the generate command took
+  81 s (source: .claude/run-proofs/FULL-DENSITY-iter2.log); the fresh-clone time of
+  2026-10-25 is in RELEASE_NOTES, Usage.
 - Hash: the body (size_cm, points_per_axis) joins the scenario hash, so each density has
-  its own hash and folder. This changes the demo hash (c8f597af59a6 today). Core files that
+  its own hash and folder. This changed the demo hash (it was c8f597af59a6 before the change; now bf394b9bfb42). Core files that
   Module 2 and 3 import are changed only after agreeing with the Module 2 session.
 - infer_scenario also recovers start y and z from the frames.
 - Manifest: Module 2 asked for a self-describing manifest (body size_cm and points_per_axis;
-  key names not decided yet). schema_version becomes 2 if the layout changes.
+  key names were not decided then). Done: schema_version 2 with a body block (size_cm,
+  points_per_axis).
 - Tests use a small-lattice config (10 per side) except tests of the full density.
-- Tolerances in the MEASURED block were measured on the 10x10x10 lattice and are re-checked
-  at full density. The task file is .claude/plans/followups/full-density.md; it runs after
-  TASK-6 (fault injection) and before TASK-7 (Generate tab).
+- Tolerances in the MEASURED block were measured on the 10x10x10 lattice. At full density the
+  roundtrip command (2026-10-25, fresh clone) printed boundary error 4 frames, duration error
+  5 frames and end-speed error 24.4 cm/s, within the limits; the position and velocity errors
+  were not re-measured there. The full-density work ran after TASK-6 (fault injection) and before
+  TASK-7 (Generate tab).
 
 DECISIONS LOG (plan-loop for Module 3, 2026-10-24 and 2026-10-25)
 - Package name: src/vl_data/usecase/ (not "motion"). SDK in src/vl_data/sdk/. Built in the
@@ -221,7 +230,10 @@ STILL OPEN
 OTHER SESSIONS
 - A Module 2 (Loader/ETL) session works in worktree-module2-loader-etl. It was told on
   2026-10-23 that the generator contract (frames.parquet Arrow schema, manifest key names,
-  fault-injection helper, core/ path) is NOT final and will be sent after plan approval.
+  fault-injection helper, core/ path) was not final. Built and committed on 2026-10-25: manifest
+  schema_version 2 with the body block, the drive layout and the fault helper; the Module 2
+  session merged it up to commit 0c189cd on 2026-10-25 and reported its own suite passing (its
+  report, not verified here; the body-block design was agreed on 2026-10-24, see A64).
 
 LLM USAGE TRACKING
 - tools/llm_usage.py install was run on 2026-10-23. The raw log .claude/llm-usage/ is

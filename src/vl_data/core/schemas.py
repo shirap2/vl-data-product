@@ -13,17 +13,6 @@ FRAMES_SCHEMA: pa.Schema = pa.schema(
     [("frame_id", pa.int64()), ("timestamp_ns", pa.int64()), ("points", pa.binary())]
 )
 
-# One row per frame; x in cm, velocity in cm/s, acceleration in cm/s^2.
-GROUND_TRUTH_SCHEMA: pa.Schema = pa.schema(
-    [
-        ("frame_id", pa.int64()),
-        ("timestamp_ns", pa.int64()),
-        ("x_cm", pa.float64()),
-        ("velocity_cm_s", pa.float64()),
-        ("acceleration_cm_s2", pa.float64()),
-    ]
-)
-
 BYTES_PER_POINT = 12  # bytes per point: three little-endian int32 values (cm)
 ARROW_BINARY_LIMIT = 2**31  # bytes: offsets of an Arrow binary array are int32
 MAX_BODY_SIZE_CM = 2_147_483_647  # cm: int32 maximum, the largest cube edge
