@@ -20,7 +20,7 @@ Four modules do the work. Each one reads what the previous one wrote and passes 
 1. **Generator.** Turns a short scenario (a start position and a list of move and stop segments) into a drive: a point cloud for every frame and a manifest with the hash of each file.
 2. **ETL + Loader.** Checks the hashes, tests every frame against six error codes (VL-001 to VL-006), keeps 9 key points per frame (8 corners and the centre), and writes them to a Parquet lake. Bad frames go to a quarantine table.
 3. **Use case.** Computes the velocity and acceleration of the vehicle from the centre point, and stores them as a motion table.
-4. **BI.** One Streamlit app with four tabs: generate a drive, ingest it, inspect its data quality, see the motion, and run SQL on the lake.
+4. **BI.** One Streamlit app with four tabs: generate a drive, ingest it, compute its motion, inspect its data quality, see the motion, and run SQL on the lake.
 
 The implemented use case is ego-motion extraction: the velocity and acceleration of a vehicle that drives forwards, drives backwards, stops, and changes speed. Five more use cases are written up in `docs/USE_CASES.md` and not built.
 
@@ -192,9 +192,11 @@ Every tracked source, config, doc and tool file. Every tracked source, config, d
 |---|---|---|
 | `data.py` | Module 4 | Data layer: drive list, quality numbers, commands and queries. No Streamlit. |
 | `figures.py` | Module 4 | Plotly figures. |
-| `ingest_panel.py` | Module 4 | Ingest panel: lists raw drive folders and ingests one drive per click through ingest_drive. The only write of the app to the lake. |
+| `lake_lock.py` | Module 4 | One in-process lock, shared by the Ingest and Compute motion buttons, so two writes to the lake never run at once in the app. |
+| `motion_panel.py` | Module 4 | Motion panel of the Analyze tab: computes or recomputes the motion table of a drive on a click, through compute_motion. |
+| `ingest_panel.py` | Module 4 | Ingest panel: lists raw drive folders and ingests one drive per click through ingest_drive. One of the app's two writes to the lake. |
 | `clean_tab.py` | Module 4 | Clean tab: quality of one drive, kept and quarantined frames by error code. Also shows the Ingest panel. |
-| `analyze_tab.py` | Module 4 | Analyze tab: the stored position, velocity and acceleration against time. |
+| `analyze_tab.py` | Module 4 | Analyze tab: the stored position, velocity and acceleration against time, and the Compute and Recompute motion buttons. |
 | `sql_tab.py` | Module 4 | SQL tab: one read-only SELECT over the lake views, example queries, 10,000-row display cap. |
 | `shell.py` | Module 4 | App shell: drive selector in the sidebar, four tabs, scenario-hash badge. |
 | `app.py` | Module 4 | Runner: python -m streamlit run src/vl_data/bi/app.py. |
@@ -208,7 +210,7 @@ Every tracked source, config, doc and tool file. Every tracked source, config, d
 | `generator/ (9 test files)` | Module 1 | Scenario model, body, motion, writer and full density, faults, inverse and round trip, CLI, Generate tab. |
 | `etl/ (9 test files)` | Module 2 | Config, body, keypoints, facts, each rule, ingest, error-code document, CLI, end to end. |
 | `sdk/ and usecase/ test files` | Module 3 | VLClient; config, estimator, pipeline, motion sweep, CLI, end to end. |
-| `bi/ (7 test files)` | Module 4 | Data layer, figures, SQL tab, tabs, shell, ingest panel, and a check that the app has no evaluation. |
+| `bi/ (8 test files)` | Module 4 | Data layer, figures, SQL tab, tabs, shell, ingest panel, motion panel, and a check that the app has no evaluation. |
 
 Not listed: generated data (`data/`, `warehouse/`), the assignment PDF and the local LLM-usage files. All are git-ignored on purpose.
 
@@ -303,7 +305,7 @@ Takes the drive folder Module 1 wrote and turns it into clean, queryable tables.
 |---|---|
 | **In** | A drive folder `data/raw//` with `frames.parquet` and `manifest.json`. Settings from `config/etl.yaml`: the nine key points, the speed limit of 9,000 cm/s, the read chunk size. |
 | **Out** | Three lake tables, one folder per drive. `keypoints`: frame, timestamp, key point name, x, y, z. `quarantine`: rejected frames or problems, with an error code and a message. `lineage`: one row per drive with its status (ok or rejected), counts of frames expected, in, kept, rejected and missing, and the hash of the frames file. |
-| **Used by** | Module 3 reads the keypoints and lineage through VLClient. Module 4 reads quarantine and lineage for the Clean tab and queries all of them in the SQL tab. |
+| **Used by** | Module 3 reads the keypoints and lineage through VLClient. Module 4 reads quarantine and lineage for the Clean tab, queries all of them in the SQL tab, and starts the ingest from a button. |
 
 ## Structure
 
@@ -380,7 +382,7 @@ The use case: the velocity and acceleration of the vehicle. It reads the centre 
 |---|---|
 | **In** | The lake tables `keypoints` and `lineage`, read through VLClient, and `config/motion.yaml`: a window of 16 frames, polynomial order 2, at least 9 valid points in a window, gaps up to 4 frames. |
 | **Out** | The `motion` table, one row per frame: frame, timestamp, position x, velocity, acceleration (null where the window is too sparse) and the number of points in the window. One partition per drive. |
-| **Used by** | Module 4 draws the table in the Analyze tab and queries it in the SQL tab. Anyone can query it with SQL through VLClient. |
+| **Used by** | Module 4 draws the table in the Analyze tab, queries it in the SQL tab, and starts the computation from a button. Anyone can query it with SQL through VLClient. |
 
 ## Structure
 
@@ -450,12 +452,12 @@ Reported numbers come from the Module 3 documents and were not re-run for this r
 
 # Module 4: BI
 
-One Streamlit app that lets a person look at a drive: generate one, ingest it into the lake, see its data quality, see its motion, and ask the lake their own question in SQL. It reads the lake through VLClient. Its only write to the lake is the ingest panel, through ingest_drive, one drive per click.
+One Streamlit app that lets a person look at a drive: generate one, ingest it into the lake, compute its motion, see its data quality, see the motion, and ask the lake their own question in SQL. It reads the lake through VLClient. It writes to the lake in two places, each on a click and one drive at a time: the ingest panel (ingest_drive) and the motion panel (compute_motion).
 
 | | |
 |---|---|
 | **In** | The lake through VLClient (key points, quarantine, lineage, motion, SQL), the raw drive folders for the Ingest panel, and a drive selector in the sidebar (lake drives only). The Generate tab is Module 1's screen. |
-| **Out** | Screens, and one write: the Ingest panel ingests one raw drive per click into the lake, through ingest_drive (the same function as the ingest command). Everything else only reads. For a drive without motion the Analyze tab still prints the exact motion command and does not run it. |
+| **Out** | Screens, and two writes, each on a click and one drive at a time: the Ingest panel ingests a raw drive through ingest_drive, and the Compute motion button writes the motion table through compute_motion (the same functions as the ingest and motion commands). Everything else only reads. The whole chain, Generate, Ingest, Compute motion, Analyze, runs from the app. |
 | **Used by** | People: a data scientist exploring one drive at a time. |
 
 ## Structure
@@ -468,7 +470,9 @@ flowchart TB
   SHELL --> ANA["Analyze tab"]
   SHELL --> SQL["SQL tab"]
   SHELL --> ING["ingest_panel.py<br/>Ingest this drive"]
-  ING -->|ingest_drive, the only lake write| LAKE
+  ING -->|ingest_drive writes the lake| LAKE
+  SHELL --> MOP["motion_panel.py<br/>Compute motion"]
+  MOP -->|compute_motion writes the motion table| LAKE
   GEN --> RAW[("data/raw/hash12/")]
   CLEAN --> DATA["data.py + figures.py"]
   ANA --> DATA
@@ -485,7 +489,7 @@ app.py starts shell.py, which draws the sidebar and the four tabs. The Generate 
 |---|---|---|
 | **Generate** | A form for a scenario, a speed preview and a Generate button. Writes a drive folder to disk. This is Module 1's screen. Under it sits the Ingest panel (below). | Module 1 writer; raw folders |
 | **Clean** | For the selected drive: frames expected, in, kept, rejected and missing, a bar chart of kept, rejected and missing frames, a bar chart of quarantine rows per error code, and the quarantine table (up to 200 rows, with the full count stated). The Ingest panel is also shown here, including on an empty lake. | lineage, quarantine |
-| **Analyze** | The stored motion: position, velocity and acceleration against time. A drive that has been ingested but has no motion yet gets the exact motion command to run. | motion |
+| **Analyze** | The stored motion: position, velocity and acceleration against time. A drive ingested without motion shows "Motion is not computed yet" and the button Compute motion (the motion command stays visible as the command-line way). With motion it shows the three charts and the button Recompute motion. A drive that is not ingested, or was rejected, shows the reason and the ingest command, with no button. Old motion with a lineage that is not ok shows the charts and a warning, with no button. | motion; writes the lake |
 | **Ingest panel** | Lists the raw drive folders: pending ones first (newest folder first), already ingested ones last, labelled re-ingest. The button "Ingest this drive" ingests one drive per click, inside a status block, through ingest_drive, the same function as the ingest command. A rejected drive is shown as a result (a warning), not as an error. Messages are fixed texts without file paths. It is hidden if the lake listing fails. | raw folders; writes the lake |
 | **SQL** | One read-only SELECT over the views keypoints, quarantine, lineage and motion, with five example queries in a dropdown. The result shows up to 10,000 rows and states the total. A non-SELECT, a second statement or a bad query shows a one-line message. | all four tables |
 
@@ -496,17 +500,18 @@ app.py starts shell.py, which draws the sidebar and the four tabs. The Generate 
 | App framework | Streamlit | Python only, so the app calls the same SDK and functions as the command line. A tab is a function that a test runner can run without a browser. | Dash (callbacks and a layout tree for the same screens) |
 | Dashboards | No Grafana or Superset | They need a server, a database connection and configuration, and they suit shared dashboards for non-Python users. | Grafana; Superset; a Jupyter notebook (not a shipped interface) |
 | Charts | Plotly | Hover, zoom and gaps come with st.plotly_chart. | Altair (less control over gaps); matplotlib (static) |
-| Data access | In-process through VLClient; no web service | One typed way to read the lake; the app reads the lake, and its only write is the ingest panel, through ingest_drive, on a click. | A REST API (listed as coming soon) |
+| Data access | In-process through VLClient; no web service | One typed way to read the lake; the app reads the lake, and writes only through the ingest panel (ingest_drive) and the motion panel (compute_motion), on a click. | A REST API (listed as coming soon) |
 
 ## How it is checked
 
-The tabs are tested with Streamlit's test runner on a small drive (a 100 cm cube of 10 points per axis). A live server was started once by a script: its health check, the page and the run of `app.py` answered, and the server log had no exception. That shows the app starts and is served. It does not show what a browser draws, and it does not cover any click. The ingest panel has its own check: a small drive goes through it in 0.20 s. Ingesting a full-density drive through the panel was not measured; the command-line ingest took 44.7 s and 43.6 s on 25 Oct and 91.5 s in a clean-clone run on 27 Oct.
+The tabs are tested with Streamlit's test runner on a small drive (a 100 cm cube of 10 points per axis). A live server was started once by a script: its health check, the page and the run of `app.py` answered, and the server log had no exception. That shows the app starts and is served. It does not show what a browser draws, and it does not cover any click. The ingest panel and the motion panel have their own checks: a small drive goes through each in 0.2 s (click and rerun). Ingesting a full-density drive through the panel was not measured; the command-line ingest took 44.7 s and 43.6 s on 25 Oct and 91.5 s in a clean-clone run on 27 Oct.
 
 ## Limits of this module
 
 - **The SQL tab can read any file on the machine.** It runs one SELECT through DuckDB, which can also read any file path with read_parquet. The app is a local single-user tool, kept on 127.0.0.1, and it has no login, so it must never be started on all network interfaces. A locked-down connection is a written follow-up. (Source: Module 4 ARCHITECTURE)
 - **One user at a time.** The app has no accounts and keeps its state per browser session. (Source: Module 4 ARCHITECTURE)
-- **The ingest lock covers only this server.** A second click while an ingest runs shows "Another ingest is running. Try again when it has finished." The lock lives inside the one server process; it does not cover the command-line ingest or a second server. The folder rule is 12 lowercase hex characters, a real directory, no symlink (junctions are detected only on Python 3.12 or later). (Source: Module 4 documents)
+- **The write lock covers only this server.** The Ingest and Compute motion buttons share one lock and never wait: a second click while a write runs shows a message to try again. The lock lives inside the one server process; it does not cover the command-line ingest or motion, or a second server. The folder rule is 12 lowercase hex characters, a real directory, no symlink (junctions are detected only on Python 3.12 or later). (Source: Module 4 documents)
+- **A failed Recompute can leave its result line undrawn.** When a Recompute motion click fails because the drive is no longer ingested ok, or the charts fail to draw right after a success, the result line is not shown. Reload the page and check the Clean tab. (Source: Module 4 documents)
 - **Display caps.** 10,000 rows in the SQL tab (the whole result is loaded first) and 200 quarantine rows in the Clean tab. (Source: Module 4 ARCHITECTURE)
 - **The scenario badge follows the sidebar.** The Generate tab's badge shows the hash of the drive selected in the sidebar, not of the scenario being edited in the form. (Source: Module 4 ARCHITECTURE)
 
@@ -662,7 +667,7 @@ A small data product for a vehicle-location signal. It generates a mock drive fr
 | **Generator** | Writes a hashed drive: a 16 fps point cloud and a manifest. Checks itself by recovering the scenario from the data. | Built |
 | **Loader / ETL** | Verifies hashes, validates frames with error codes VL-001 to VL-006, keeps 9 key points per frame, and writes keypoints, quarantine and lineage tables to a queryable lake. | Built |
 | **Use-case algorithm** | Computes velocity and acceleration from the stored centre point (motion), and serves the lake through the Python SDK (VLClient) and SQL. | Built |
-| **BI** | One Streamlit app with four tabs: Generate, Clean, Analyze, SQL, and an Ingest button for raw drives. | Built |
+| **BI** | One Streamlit app with four tabs: Generate, Clean, Analyze, SQL, an Ingest button for raw drives, and a Compute motion button. | Built |
 
 ### Install and first check
 
@@ -786,7 +791,7 @@ python -m streamlit run src/vl_data/bi/app.py --server.address 127.0.0.1 --serve
 (a local web page with the tabs Generate, Clean, Analyze, SQL)
 ```
 
-Run it from the repository root. --server.address 127.0.0.1 keeps the page on this computer, which matters because the SQL tab has no login. The Generate and Clean tabs have an Ingest this drive button that ingests one raw drive per click. Checked by Streamlit's test runner, an ingest check and one live-server start; not opened in a browser by hand.
+Run it from the repository root. --server.address 127.0.0.1 keeps the page on this computer, which matters because the SQL tab has no login. The Generate and Clean tabs have an Ingest this drive button, and the Analyze tab has Compute motion and Recompute motion buttons, so the whole chain runs from the page. Checked by Streamlit's test runner, an ingest check, a motion check and one live-server start; not opened in a browser by hand.
 
 ### A scenario file
 
@@ -817,7 +822,7 @@ Speeds are cm/s and positive means forward. A move changes the speed in a straig
 - frames_rejected counts quarantine rows that name a file row, so a frame that breaks two rules counts twice. A drive that cannot be read is rejected with INTEGRITY, not with one of the six VL codes.
 - The motion table is not refreshed by a new ingest. After re-ingesting a drive, run motion again.
 - VLClient.sql runs any single SELECT, including read_parquet on any file the user can read. It is a local single-user tool; do not expose it to untrusted input. The BI app must stay on 127.0.0.1 because its SQL tab has no login.
-- The BI app can ingest a drive, but it does not compute motion yet: for a drive without motion the Analyze tab prints the motion command to run. The ingest lock covers one server process only, not the command line.
+- The BI app can ingest a drive and compute its motion from the page, on a click and one drive at a time. Its single write lock covers one server process only, not the command line. If a Recompute motion click fails because the drive is no longer ingested ok, its result line is not drawn: reload the page and check the Clean tab.
 - BI app: run it from the repository root, because the default lake and raw folders are relative to the current folder. The SQL box text is not refreshed when the selected drive changes, and the Generate tab's badge shows the hash of the drive selected in the sidebar.
 - Single machine, CPU only.
 
