@@ -36,7 +36,10 @@ The deliverables are short and in `docs/`:
 | [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) | Product description, usage, known issues, coming soon |
 | [docs/LLM_USAGE.md](docs/LLM_USAGE.md) | Model, approach and main prompts |
 
-An illustrated overview of all four modules is in [docs/extras/ENGINEERING_REPORT.pdf](docs/extras/ENGINEERING_REPORT.pdf).Timings in the docs were measured on one Windows machine.
+An illustrated overview of all four modules is in [docs/extras/ENGINEERING_REPORT.pdf](docs/extras/ENGINEERING_REPORT.pdf).
+
+Timings in the docs were measured on one Windows machine.
+
 ## Tests
 
 ```powershell
