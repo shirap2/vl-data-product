@@ -6,10 +6,10 @@ From a mock vehicle-location signal to queryable velocity and acceleration. Four
 
 | Module | State | Where |
 |---|---|---|
-| 1 Generator | Built and merged into main, without ground truth | `main` (change 608136a) |
-| 2 ETL + Loader | Built; main merged into its branch | `worktree-module2-loader-etl` at a182575 |
-| 3 Use case | Committed on its branch, not in main yet | `module3-use-case` at c104c21 |
-| 4 BI | Committed on its branch, not in main yet | `module4-bi` at 79c9f52 |
+| 1 Generator | Built and in main | change 608136a |
+| 2 ETL + Loader | Built and in main | merged as a0c4756 |
+| 3 Use case | Built and in main | merged as e896227 |
+| 4 BI | Built and in main | merged as 95a9f6f |
 
 ## What the project does
 
@@ -84,11 +84,10 @@ Data moves from the scenario to the drive folder, to the lake tables, to the mot
 | Module 1 | **A Windows junction at a drive folder** | The writer and the Generate tab treat a junction like a normal folder and refuse only symlinks. Kept on purpose after review (decision of 26 Oct 2026). | follow-up TASK-7-1-3 |
 | Whole project | **Plain Parquet has no table layer** | No atomic commit across files, no schema-evolution tracking, no time travel. | ARCHITECTURE, limits |
 | Whole project | **Request from Module 2, not done** | Cap the size of manifest.json, refuse symlinked files, add a drive-id validator in core. Low priority; left open on purpose. | follow-up core-hardening-1 |
-| Whole project | **Four branches are not merged into main yet** | Module 1 is in main (its last change is 608136a). Modules 2 to 4 are on their own branches, and this report reads each from its branch: Module 2 at a182575, Module 3 at c104c21, Module 4 at 79c9f52. The documents they all edited will conflict at merge. | git state, 27 Oct 2026 |
 
 ## File structure
 
-Every tracked source, config, doc and tool file. Module 1 comes from main. Modules 2 to 4 come from their branches, which are not merged into main yet, so the tree is the union of the four. The Owner column says which module a file belongs to.
+Every tracked source, config, doc and tool file. Every tracked source, config, doc and tool file of the four modules, as in main on 27 Oct 2026. The Owner column says which module a file belongs to.
 
 ### Project root (`/`)
 
@@ -114,6 +113,8 @@ Every tracked source, config, doc and tool file. Module 1 comes from main. Modul
 | `architecture_context.txt` | Whole project | The agreed design decisions and the checklist of what the assignment asks for. The base of every module plan. |
 | `ARCHITECTURE.md` | Whole project | Design document: one section per module, with the data flow and the reason for each technology choice. |
 | `ASSUMPTIONS.md` | Whole project | Numbered log of every assumption and decision, with the reason and the consequence. |
+| `ENGINEERING_REPORT.pdf` | Whole project | This report as a PDF: 15 portrait A4 pages, with the diagrams turned sideways at the end. |
+| `ENGINEERING_REPORT.md` | Whole project | This report as Markdown, with Mermaid diagrams that GitHub draws. |
 | `ERROR_CODES.md` | Module 2 | List of error codes VL-001 to VL-006. Generated from the rule registry; a test fails if the file drifts. |
 | `RELEASE_NOTES.md` | Whole project | Product description, usage with commands, known issues, coming soon. |
 | `SUPPORTING_DOCUMENTATION.md` | Whole project | Generated single file: error codes, architecture and release notes in the order the assignment lists them. |
