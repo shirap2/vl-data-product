@@ -59,8 +59,17 @@ then swapped in, so a crash keeps the old data. The swap is per table, not one a
 
 At 1,000,000 points per frame, a frame is 12 MB, 192 MB per second at 16 fps and about 691 GB per
 hour (computed). The demo drive (1,000 frames) is 12 GB raw (computed) and 287 MB on disk (measured).
-A production design would use Iceberg or Delta on object storage, Spark or Flink for many drives,
-keyframe-plus-delta storage instead of every point, schema contracts and scheduled runs.
+This design fits one machine and one drive at a time. At scale (not built or measured here):
+
+- **Object storage (S3 or similar) with keyframe-plus-delta storage:** 691 GB per hour per vehicle
+  does not fit on local disk, and most points repeat from frame to frame.
+- **Apache Iceberg or Delta Lake:** plain Parquet has no atomic commit across tables and allows one
+  writer. These add atomic commits, many writers, schema evolution and time travel.
+- **Spark or Flink, scheduled by Airflow:** one task per drive replaces the one-machine pandas load;
+  the scheduler adds retries.
+- **Kafka:** only if drives must be queryable while they are still being recorded.
+- **Trino and a REST API, with a login:** many users need a shared query service, not an in-process
+  DuckDB and an open Streamlit page.
 
 ## Limits
 
