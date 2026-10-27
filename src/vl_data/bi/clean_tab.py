@@ -1,4 +1,4 @@
-"""Clean tab of the BI app: ingest quality of one lake drive. Read-only.
+"""Clean tab of the BI app: ingest quality of one lake drive. Reads the lake.
 
 Units: frames and rows are counts; no other physical quantity is shown.
 """
@@ -14,7 +14,7 @@ from vl_data.sdk.client import VLClient
 
 
 def render_clean_tab(client: VLClient, drive: str, raw_dir: Path, lake_dir: Path) -> None:
-    """Draw the quality view of a drive (read-only); never raises.
+    """Draw the quality view of a drive (reads the lake, writes nothing); never raises.
 
     Shows counts (frames, rows), two bar charts and the first QUARANTINE_ROWS_SHOWN (200)
     quarantine rows. A drive without a lineage row gets the exact ingest command for

@@ -160,9 +160,12 @@ def test_missing_lake_shows_info(bi_config: Config, tmp_path: Path) -> None:
     assert at.tabs[0].button[0].label == "Generate"
     assert _badges(at, 0) == []
     for index in (1, 2, 3):
-        assert len(at.tabs[index].info) == 1
         assert "lake" in at.tabs[index].info[0].value
         assert _badges(at, index) == []
+    for index in (2, 3):  # Analyze and SQL keep the single hint
+        assert len(at.tabs[index].info) == 1
+    assert len(at.tabs[1].info) == 2  # hint + "no raw folder" note of the ingest panel
+    assert "raw" in at.tabs[1].info[1].value
     assert not lake_dir.exists()
     assert not raw.exists()
 
@@ -173,7 +176,8 @@ def test_empty_lake_shows_info(bi_config: Config, tmp_path: Path) -> None:
     lake_dir.mkdir()
     at = _app(bi_config, lake_dir, tmp_path / "raw").run()
     assert not at.exception
-    assert len(at.info) == 3
+    # three hints (Clean, Analyze, SQL) + a "no raw folder" note in Generate and in Clean
+    assert len(at.info) == 5
     assert list(lake_dir.iterdir()) == []
 
 

@@ -749,9 +749,10 @@ Clean, Analyze and SQL. The first three are in the
 design; the SQL tab is a user decision of 2026-10-26, added so a user can ask the lake their own
 question. A sidebar selector, "Drive", picks a drive from the lake, and every tab shows the
 scenario hash of that drive as a badge. The package is `vl_data.bi`. It uses `VLClient` and
-`render_generate_tab` as they are, writes nothing to the lake and edits no
-Module 1, 2 or 3 file. Module 4 adds no error codes: the Clean tab shows the existing VL-001 to
-VL-006 and the drive-level code `INTEGRITY` from `docs/ERROR_CODES.md`.
+`render_generate_tab` as they are, writes to the lake only through the ingest panel (on a click,
+through `ingest_drive`) and edits no Module 1, 2 or 3 file. Module 4 adds no error codes: the
+Clean tab shows the existing VL-001 to VL-006 and the drive-level code `INTEGRITY` from
+`docs/ERROR_CODES.md`.
 
 #### Data flow
 
@@ -778,11 +779,26 @@ that `streamlit run` starts.
 
 - Generate: the existing `render_generate_tab(config)`, unchanged. Its badge shows the scenario
   hash of the drive selected in the sidebar, not the hash of the form the user is editing.
-- Clean (read-only): for the selected drive, the counts expected, in, kept, rejected and missing
+- Clean (reads the lake): for the selected drive, the counts expected, in, kept, rejected and missing
   (frames) and the keypoint rows (rows); a bar chart of frames kept, rejected and missing; a bar
   chart of quarantine rows per error code; and the quarantine table, which shows at most 200 rows
   and states the full count. A drive with no lineage row is not ingested: the tab prints the
-  exact `ingest` command for the raw folder and the lake, and does not run it.
+  exact `ingest` command for the raw folder and the lake (the command-line alternative to the
+  ingest panel below), and does not run it.
+- Ingest panel (`bi/ingest_panel.py`), drawn under the Generate tab and in the Clean tab
+  (also on an empty lake, where Analyze and SQL keep the hint): a selector of the raw drive
+  folders (pending drives first, newest folder first; ingested ones last, labelled "re-ingest")
+  and the button "Ingest this drive". One click ingests one drive through `ingest_drive`, the
+  same function the `ingest` command calls, inside an `st.status` block. The ingest cost is
+  therefore the `ingest_drive` figures above (in-process, not the command-line run; full-density
+  drive: 44.7 s first ingest, 43.6 s
+  re-ingest, measured 2026-10-25 on one machine, plus one unexplained 3,730 s outlier); the
+  panel's own overhead on a full-density drive is not measured. The page is blocked while the
+  ingest runs, so a large drive can take minutes. The result is kept in session state, the page
+  reruns so the sidebar lists the drive, and the result line is drawn once. A drive the ETL
+  rejects is shown as a warning that points to the Clean tab, not as an error. This is the only
+  lake write of the app; the lake has a single writer, so do not run the command line
+  `ingest` at the same time.
 - Analyze: only the stored motion: three charts (centroid x in cm, velocity in cm/s,
   acceleration in cm/s^2, against time in s), drawn with no click and no raw folder. The
   centroid x is the raw centroid, not corrected. When the drive has no stored motion the tab
@@ -845,7 +861,10 @@ exercise does not require it. `render_analyze_tab(client, config, lake_dir, driv
 
 The tabs are tested with AppTest on a small drive (a 100 cm cube of 10 points per axis); on
 2026-10-26 the 100 tests in `tests/bi` passed with 100% statement coverage of `vl_data.bi` (319
-statements, 0 missed), and the full suite gave 958 passed, 4 skipped (all measured). A live
+statements, 0 missed), and the full suite gave 958 passed, 4 skipped (all measured, 2026-10-26).
+After the ingest panel was added, on 2026-10-27 `tests/bi` gave 141 passed, 1 skipped with 100%
+coverage of `vl_data.bi` (439 statements, 0 missed; measured; log
+`.claude/run-proofs/M4-INGEST-final-tests-bi.log`, local and git-ignored). A live
 Streamlit server was started by a script (`.claude/run-proofs/module4_server_check.py`, local,
 git-ignored) after the evaluation was removed: the health endpoint, the page and the server's own
 run of `app.py` answered, and the server log had no exception (`SERVER_CHECK: PASS`, 8.4 s
@@ -927,7 +946,7 @@ speeds. All data is synthetic.
 
 Module 3 adds the use case: `motion` turns the stored centroid position of a drive into velocity (cm/s) and acceleration (cm/s^2) with a sliding least-squares fit over 16 frames. The Python SDK (`VLClient`) and SQL read the lake.
 
-Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored centroid position, velocity and acceleration; SQL runs one SELECT over the lake. Apart from the Generate tab, which writes a drive, it only reads the lake.
+Module 4 adds the BI app: one Streamlit page with four tabs. Generate writes a drive; Clean shows how many frames of the selected drive were kept, rejected or missing and why; Analyze shows the stored centroid position, velocity and acceleration; SQL runs one SELECT over the lake. The app reads the lake. It writes in two places: the Generate tab writes a raw drive, and the ingest panel also writes the lake through `ingest_drive`, on a click.
 
 ### What is in this version
 
@@ -1209,14 +1228,24 @@ The page has four tabs: Generate, Clean, Analyze and SQL. The sidebar selector "
 drives in the lake. Each tab shows a badge "scenario hash: <first 12 hex>" for the selected drive
 and a caption with all 64 characters. (On the Generate tab the badge is labelled "selected
 drive" and shows the hash of the drive chosen in the sidebar, not the scenario in the form.)
-With an empty lake the Generate tab has no badge and the other three tabs show a hint.
+With an empty lake the Generate tab has no badge and the other three tabs show a hint; the ingest panel shows under Generate and in Clean.
 
-- Clean (read-only): the metrics "expected (frames)", "in (frames)", "kept (frames)", "rejected
+- Clean (reads the lake): the metrics "expected (frames)", "in (frames)", "kept (frames)", "rejected
   (frames)", "missing (frames)" and "keypoint rows (rows)"; a bar chart of the frame counts; a bar
   chart of quarantine rows per error code; and the quarantine table, which shows at most 200 rows
   and states the full count ("showing N of M quarantine rows"). If the drive is not ingested the
   tab prints the command to run, for example
   `python -m vl_data ingest '<raw>\<drive>' --lake-dir '<lake>'`, and does not run it.
+- Ingest (Generate tab and Clean tab): choose a raw drive folder and click "Ingest this drive".
+  One click ingests one drive; the sidebar then lists it. The panel calls the same
+  `ingest_drive` as the command, so the `ingest_drive` figures (in-process, not the command-line run) are its ingest cost
+  (full-density drive: 44.7 s first ingest, 43.6 s re-ingest, measured 2026-10-25 on one machine, plus one
+  unexplained 3,730 s outlier); the panel's own overhead on a full-density drive is not measured.
+  The page is blocked while it runs, so a large drive can take minutes. The check script
+  `.claude/run-proofs/module4_ingest_check.py` prints the seconds of a small drive. A
+  drive already in the lake can be ingested again ("re-ingest"). Command line alternative:
+  `python -m vl_data ingest '<raw>\<drive>' --lake-dir '<lake>'` (do not run both at once; the
+  lake has a single writer, and the in-process lock of the panel does not cover the command line).
 - Analyze: draws only the stored motion: centroid x (cm), velocity (cm/s) and acceleration
   (cm/s^2) against time (s), from the lake; it needs no click and no raw folder. If the drive was
   ingested with status ok but has no stored motion, the tab prints
@@ -1238,7 +1267,7 @@ endpoint answered `ok`, the page answered HTTP 200, the server's own run of `app
 printed `SERVER_CHECK: PASS`, 8.4 s in all, measured on 2026-10-26 with a Python timer; log
 `.claude/run-proofs/M4RM-server.log`, local, git-ignored). After the evaluation was removed, the
 100 tests in `tests/bi` passed with 100% statement coverage of `vl_data.bi` (319 statements, 0
-missed), and the full suite gave 958 passed, 4 skipped (all measured, 2026-10-26). The server check
+missed), and the full suite gave 958 passed, 4 skipped (all measured, 2026-10-26). With the ingest panel, on 2026-10-27 `tests/bi` gave 141 passed, 1 skipped with 100% coverage of `vl_data.bi` (439 statements; measured; log `.claude/run-proofs/M4-INGEST-final-tests-bi.log`, local and git-ignored). The server check
 proves the app starts and is served; it cannot click a widget, which is what the test runner
 covers. The page was not opened in a browser by hand, and the full-density demo drive was not loaded in the app.
 

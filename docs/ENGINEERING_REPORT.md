@@ -9,7 +9,7 @@ From a mock vehicle-location signal to queryable velocity and acceleration. Four
 | 1 Generator | Built and merged into main, without ground truth | `main` (change 608136a) |
 | 2 ETL + Loader | Built; main merged into its branch | `worktree-module2-loader-etl` at a182575 |
 | 3 Use case | Committed on its branch, not in main yet | `module3-use-case` at c104c21 |
-| 4 BI | Committed on its branch, not in main yet | `module4-bi` at 79c9f52 |
+| 4 BI | Committed on its branch, not in main yet | `module4-bi` at 95a9f6f |
 
 ## What the project does
 
@@ -84,7 +84,7 @@ Data moves from the scenario to the drive folder, to the lake tables, to the mot
 | Module 1 | **A Windows junction at a drive folder** | The writer and the Generate tab treat a junction like a normal folder and refuse only symlinks. Kept on purpose after review (decision of 26 Oct 2026). | follow-up TASK-7-1-3 |
 | Whole project | **Plain Parquet has no table layer** | No atomic commit across files, no schema-evolution tracking, no time travel. | ARCHITECTURE, limits |
 | Whole project | **Request from Module 2, not done** | Cap the size of manifest.json, refuse symlinked files, add a drive-id validator in core. Low priority; left open on purpose. | follow-up core-hardening-1 |
-| Whole project | **Four branches are not merged into main yet** | Module 1 is in main (its last change is 608136a). Modules 2 to 4 are on their own branches, and this report reads each from its branch: Module 2 at a182575, Module 3 at c104c21, Module 4 at 79c9f52. The documents they all edited will conflict at merge. | git state, 27 Oct 2026 |
+| Whole project | **Four branches are not merged into main yet** | Module 1 is in main (its last change is 608136a). Modules 2 to 4 are on their own branches, and this report reads each from its branch: Module 2 at a182575, Module 3 at c104c21, Module 4 at 95a9f6f (ingest button not yet committed). The documents they all edited will conflict at merge. | git state, 27 Oct 2026 |
 
 ## File structure
 
@@ -191,9 +191,10 @@ Every tracked source, config, doc and tool file. Module 1 comes from main. Modul
 |---|---|---|
 | `data.py` | Module 4 | Data layer: drive list, quality numbers, commands and queries. No Streamlit. |
 | `figures.py` | Module 4 | Plotly figures. |
-| `clean_tab.py` | Module 4 | Clean tab: quality of one drive, kept and quarantined frames by error code. Read-only. |
+| `clean_tab.py` | Module 4 | Clean tab: quality of one drive, kept and quarantined frames by error code. Reads the lake. |
 | `analyze_tab.py` | Module 4 | Analyze tab: the stored position, velocity and acceleration against time. |
 | `sql_tab.py` | Module 4 | SQL tab: one read-only SELECT over the lake views, example queries, 10,000-row display cap. |
+| `ingest_panel.py` | Module 4 | Ingest panel: lists raw drive folders, ingests one drive per click through `ingest_drive` (the only lake write of the app). |
 | `shell.py` | Module 4 | App shell: drive selector in the sidebar, four tabs, scenario-hash badge. |
 | `app.py` | Module 4 | Runner: python -m streamlit run src/vl_data/bi/app.py. |
 
@@ -206,7 +207,7 @@ Every tracked source, config, doc and tool file. Module 1 comes from main. Modul
 | `generator/ (9 test files)` | Module 1 | Scenario model, body, motion, writer and full density, faults, inverse and round trip, CLI, Generate tab. |
 | `etl/ (9 test files)` | Module 2 | Config, body, keypoints, facts, each rule, ingest, error-code document, CLI, end to end. |
 | `sdk/ and usecase/ test files` | Module 3 | VLClient; config, estimator, pipeline, motion sweep, CLI, end to end. |
-| `bi/ (5 test files)` | Module 4 | Data layer, figures, SQL tab, tabs, shell. |
+| `bi/ (7 test files)` | Module 4 | Data layer, figures, SQL tab, tabs, shell, ingest panel, and a check that the app has no evaluation (`test_no_evaluation.py`). |
 
 Not listed: generated data (`data/`, `warehouse/`), the assignment PDF and the local LLM-usage files. All are git-ignored on purpose.
 
@@ -362,7 +363,7 @@ Reported numbers come from the other sessions' documents and were not re-run for
 | Key points kept per frame | 9 | decision | 8 corners and the centre |
 | Speed limit for VL-006 | 9,000 cm/s | decision | a Tesla's top speed, 322 km/h, rounded up (config/etl.yaml) |
 | Demo drive on a small test body | 1,000 of 1,000 frames kept, 9,000 key-point rows | measured | checked by a test, from the Module 2 documents |
-| Ingest of one full-density drive | about 45 to 56 s | reported | from the Module 2 and Module 3 sessions; different runs, not re-measured here |
+| Ingest of one full-density drive | about 45 to 56 s | figure from an earlier session, no log in this review | from the Module 2 and Module 3 sessions; different runs, not re-measured here |
 
 ## Limits of this module
 
@@ -441,19 +442,19 @@ Reported numbers come from the Module 3 documents and were not re-run for this r
 
 | Figure | Value | Label | Note |
 |---|---|---|---|
-| Demo drive, frames estimated | 1,000 of 1,000 | reported | 0 frames with a null estimate; from the Module 3 documents, run on 25 Oct 2026 |
-| motion command on that drive | about 1 s | reported | from the Module 3 documents |
-| Second run | identical file | reported | the motion partition file was byte for byte the same (same SHA-256 twice) |
+| Demo drive, frames estimated | 1,000 of 1,000 | figure from an earlier session, no log in this review | 0 frames with a null estimate; from the Module 3 documents, run on 25 Oct 2026 |
+| motion command on that drive | about 1 s | figure from an earlier session, no log in this review | from the Module 3 documents |
+| Second run | identical file | figure from an earlier session, no log in this review | the motion partition file was byte for byte the same (same SHA-256 twice) |
 | Window, order, minimum points, gap | 16, 2, 9, 4 | decision | config/motion.yaml; chosen by a development sweep (tools/motion_sweep.py, kept as a developer tool) |
 
 # Module 4: BI
 
-One Streamlit app that lets a person look at a drive: generate one, see its data quality, see its motion, and ask the lake their own question in SQL. It reads everything through VLClient and writes nothing.
+One Streamlit app that lets a person look at a drive: generate one, see its data quality, see its motion, and ask the lake their own question in SQL. It reads the lake through VLClient; its only write to the lake is the ingest panel, through `ingest_drive`, on a click.
 
 | | |
 |---|---|
 | **In** | The lake through VLClient (key points, quarantine, lineage, motion, SQL) and a drive selector in the sidebar. The Generate tab is Module 1's screen. |
-| **Out** | Screens only. The app writes nothing to the lake. When a drive is missing data it prints the exact ingest or motion command and does not run it. |
+| **Out** | Screens only. The app reads the lake; the ingest panel is its only write to the lake, through `ingest_drive`, on a click. When a drive is missing data it prints the exact ingest or motion command and does not run it. |
 | **Used by** | People: a data scientist exploring one drive at a time. |
 
 ## Structure
@@ -491,7 +492,7 @@ app.py starts shell.py, which draws the sidebar and the four tabs. The Generate 
 | App framework | Streamlit | Python only, so the app calls the same SDK and functions as the command line. A tab is a function that a test runner can run without a browser. | Dash (callbacks and a layout tree for the same screens) |
 | Dashboards | No Grafana or Superset | They need a server, a database connection and configuration, and they suit shared dashboards for non-Python users. | Grafana; Superset; a Jupyter notebook (not a shipped interface) |
 | Charts | Plotly | Hover, zoom and gaps come with st.plotly_chart. | Altair (less control over gaps); matplotlib (static) |
-| Data access | In-process through VLClient; no web service | One typed way to read the lake; the app writes nothing to it. | A REST API (listed as coming soon) |
+| Data access | In-process through VLClient; no web service | One typed way to read the lake; the app reads the lake, and its only write is the ingest panel, through `ingest_drive`, on a click. | A REST API (listed as coming soon) |
 
 ## How it is checked
 
