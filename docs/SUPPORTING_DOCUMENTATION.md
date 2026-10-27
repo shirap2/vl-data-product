@@ -182,7 +182,7 @@ Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 | `manifest.json` | raw drive | schema version 2, drive hash, scenario, body (`size_cm`, `points_per_axis`), fps, counts, SHA-256 and size of each file |
 | keypoints | bronze (built) | one row per keypoint: frame_id, timestamp_ns, keypoint name, x, y, z (cm, float64); 9 rows per frame |
 | quarantine | bronze (built) | one row per rejected frame or missing frame number: frame_id, row_index, code, message; a drive-level row has no frame_id |
-| lineage | bronze (built) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames and ground-truth file hashes |
+| lineage | bronze (built) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames file hash |
 | motion | silver (planned) | per-frame x, velocity, acceleration |
 | evaluation tables | gold (planned) | errors against ground truth |
 
@@ -271,8 +271,8 @@ footer claimed; `scenario_hash` must be 64 lowercase hex characters; and stored 
 cleaned of control characters, cut to 300 characters, and limited to 20 problems plus one summary row.
 Known limits: the row-group byte cap trusts the footer's size, which a compression bomb can lie about;
 the folder is assumed not to change during an ingest; `manifest.json` and linked data files are read by
-core code with no size cap (a follow-up for the generator session). `ground_truth.parquet` is hashed in
-full by `verify_drive` but never opened or parsed by the ingest.
+core code with no size cap (a follow-up for the generator session). The ingest opens only
+`frames.parquet`; any other file listed in the manifest is hashed in full by `verify_drive` and never opened.
 
 #### ETL settings and keypoints (built)
 
@@ -288,7 +288,7 @@ The corner lattice indices are derived from the number of points per axis n as `
 
 | Module | What it holds | Rules worth knowing |
 |---|---|---|
-| `etl/facts.py` | `scan_frames` | Streams `frames.parquet` in chunks and returns two things: one small record per row (frame number, timestamp, payload size, payload SHA-256, whether the cloud is valid, centroid) and the keypoints of every valid frame as a rows x keypoints x 3 array (NaN for an invalid frame). A bad payload never raises; a null frame number or timestamp, or a missing column, raises one `ValueError` (the caller checks the schema first). It never opens the ground-truth file. The size is checked before the payload is decoded. The deviation from the lattice is computed in int32 when that cannot overflow (int64 otherwise), the centroid is an exact integer sum divided by the point count, and the SHA-256 runs in a second thread (the speed-up was measured once in a session, not saved to a log). |
+| `etl/facts.py` | `scan_frames` | Streams `frames.parquet` in chunks and returns two things: one small record per row (frame number, timestamp, payload size, payload SHA-256, whether the cloud is valid, centroid) and the keypoints of every valid frame as a rows x keypoints x 3 array (NaN for an invalid frame). A bad payload never raises; a null frame number or timestamp, or a missing column, raises one `ValueError` (the caller checks the schema first). The size is checked before the payload is decoded. The deviation from the lattice is computed in int32 when that cannot overflow (int64 otherwise), the centroid is an exact integer sum divided by the point count, and the SHA-256 runs in a second thread (the speed-up was measured once in a session, not saved to a log). |
 | `etl/ingest.py` | `ingest_drive`, `IngestResult` | The entry point. Runs the gates, the scan, the rules and the three table swaps (next section). |
 | `etl/rules.py` | `RULES`, `RuleContext`, `run_rules` | Six rules with their codes, meaning, detection text and example fault. Drive rules (VL-005) and frame rules (VL-001 to VL-004, VL-006). VL-006 runs only on frames that passed the others. |
 | `etl/body.py` | `drive_body`, `expected_frame_count` | `drive_body(manifest)` returns the body from `manifest.body`; `expected_frame_count(manifest)` is the number of frames the scenario implies, used by VL-001. |
@@ -336,8 +336,8 @@ Steps for one drive:
    order: keypoints, quarantine, lineage. Lineage goes last and acts as the commit marker. A
    rejected drive drops its keypoints first, then writes its quarantine rows and a lineage row
    with status `rejected` and zero counts. The lineage row holds the scenario hash, the schema
-   version, the counts and the manifest hashes of the frames and ground-truth files (taken from
-   the manifest after the files were verified; the ground-truth file is never opened). A keypoint
+   version, the counts and the manifest hash of the frames file (taken from
+   the manifest after the files were verified). A keypoint
    spec that does not fit the body is a configuration error: `ValueError`, nothing written.
 
 | Code | Rule in short |
@@ -829,7 +829,7 @@ exist.
   as one atomic step. A crash in between is repaired by loading the drive again.
 - The lake is single-writer: load one drive at a time. A failed partition restore leaves the old
   data in `_swap/old-<id>` for you to recover by hand; it is never deleted automatically.
-- The loader reads the frames file from disk twice: `verify_drive` hashes it once, then the scan reads it once more, in chunks (the ground-truth file is hashed once and never parsed). It is built for one machine, not for a stream. Measured peak memory was about 1.7 to 1.9 GiB at full density, while one Parquet row group is about 600 MB uncompressed (50 frames); the chunk size does not bound it. A drive with a row group above 2,048 MiB (`max_row_group_mib`) is rejected.
+- The loader reads the frames file from disk twice: `verify_drive` hashes it once, then the scan reads it once more, in chunks (any other file in the manifest is hashed once and never parsed). It is built for one machine, not for a stream. Measured peak memory was about 1.7 to 1.9 GiB at full density, while one Parquet row group is about 600 MB uncompressed (50 frames); the chunk size does not bound it. A drive with a row group above 2,048 MiB (`max_row_group_mib`) is rejected.
 - Measured on 2026-10-25 (one machine, demo drive `bf394b9bfb42`, 1,000 frames x 1,000,000 points, row groups of 50 frames): the latest run took 44.7 s for the first ingest into a fresh lake and 43.6 s for a re-ingest, with a peak working set of 1,898 MiB (`.claude/run-proofs/TASK-4-measure-iter2b.log`). An earlier run measured 45.0 s, 42.9 s and 1,718 MiB (`TASK-4-measure.log`). One first run (`TASK-4-measure-iter2.log`) took 3,730 s while its CPU time was only about 54 s; the cause is unknown and it was not reproduced, so it is an open outlier (the next full-density run should log free memory and disk). A frame scan of 91 s and 1.59 GiB before a speed-up was measured once in a session; the output was not saved to a log.
 - A drive folder is treated as hostile: a manifest above 2,000,000 points per frame (`max_points_per_frame`), a Parquet footer claiming more than 2 x expected frames + 1,000 rows, or a malformed `scenario_hash` is rejected with `INTEGRITY` before anything large is allocated, and at most 20 problems (plus one "and K more" row) are stored per drive. The row-group size check trusts the footer, so a compression bomb is a known gap.
 - `frames_rejected` counts quarantine rows that name a file row, so a frame that breaks two rules counts twice; `frames_in` is not always `frames_kept + frames_rejected`. The ingest assumes the drive folder does not change while it runs.

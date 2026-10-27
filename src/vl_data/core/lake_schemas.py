@@ -37,7 +37,6 @@ LINEAGE_SCHEMA: pa.Schema = pa.schema(
         pa.field("frames_missing", pa.int64(), nullable=False),
         pa.field("keypoint_rows", pa.int64(), nullable=False),
         pa.field("frames_sha256", pa.string(), nullable=True),
-        pa.field("ground_truth_sha256", pa.string(), nullable=True),
     ]
 )
 

@@ -114,7 +114,7 @@ Units are centimetres, seconds, cm/s and cm/s^2 everywhere.
 | `manifest.json` | raw drive | schema version 2, drive hash, scenario, body (`size_cm`, `points_per_axis`), fps, counts, SHA-256 and size of each file |
 | keypoints | bronze (built) | one row per keypoint: frame_id, timestamp_ns, keypoint name, x, y, z (cm, float64); 9 rows per frame |
 | quarantine | bronze (built) | one row per rejected frame or missing frame number: frame_id, row_index, code, message; a drive-level row has no frame_id |
-| lineage | bronze (built) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames and ground-truth file hashes |
+| lineage | bronze (built) | one row per drive: scenario hash, schema version, status, frame counts, keypoint rows, the frames file hash |
 | motion | silver (planned) | per-frame x, velocity, acceleration |
 | evaluation tables | gold (planned) | errors against ground truth |
 
@@ -203,8 +203,8 @@ footer claimed; `scenario_hash` must be 64 lowercase hex characters; and stored 
 cleaned of control characters, cut to 300 characters, and limited to 20 problems plus one summary row.
 Known limits: the row-group byte cap trusts the footer's size, which a compression bomb can lie about;
 the folder is assumed not to change during an ingest; `manifest.json` and linked data files are read by
-core code with no size cap (a follow-up for the generator session). `ground_truth.parquet` is hashed in
-full by `verify_drive` but never opened or parsed by the ingest.
+core code with no size cap (a follow-up for the generator session). The ingest opens only
+`frames.parquet`; any other file listed in the manifest is hashed in full by `verify_drive` and never opened.
 
 ### ETL settings and keypoints (built)
 
@@ -220,7 +220,7 @@ The corner lattice indices are derived from the number of points per axis n as `
 
 | Module | What it holds | Rules worth knowing |
 |---|---|---|
-| `etl/facts.py` | `scan_frames` | Streams `frames.parquet` in chunks and returns two things: one small record per row (frame number, timestamp, payload size, payload SHA-256, whether the cloud is valid, centroid) and the keypoints of every valid frame as a rows x keypoints x 3 array (NaN for an invalid frame). A bad payload never raises; a null frame number or timestamp, or a missing column, raises one `ValueError` (the caller checks the schema first). It never opens the ground-truth file. The size is checked before the payload is decoded. The deviation from the lattice is computed in int32 when that cannot overflow (int64 otherwise), the centroid is an exact integer sum divided by the point count, and the SHA-256 runs in a second thread (the speed-up was measured once in a session, not saved to a log). |
+| `etl/facts.py` | `scan_frames` | Streams `frames.parquet` in chunks and returns two things: one small record per row (frame number, timestamp, payload size, payload SHA-256, whether the cloud is valid, centroid) and the keypoints of every valid frame as a rows x keypoints x 3 array (NaN for an invalid frame). A bad payload never raises; a null frame number or timestamp, or a missing column, raises one `ValueError` (the caller checks the schema first). The size is checked before the payload is decoded. The deviation from the lattice is computed in int32 when that cannot overflow (int64 otherwise), the centroid is an exact integer sum divided by the point count, and the SHA-256 runs in a second thread (the speed-up was measured once in a session, not saved to a log). |
 | `etl/ingest.py` | `ingest_drive`, `IngestResult` | The entry point. Runs the gates, the scan, the rules and the three table swaps (next section). |
 | `etl/rules.py` | `RULES`, `RuleContext`, `run_rules` | Six rules with their codes, meaning, detection text and example fault. Drive rules (VL-005) and frame rules (VL-001 to VL-004, VL-006). VL-006 runs only on frames that passed the others. |
 | `etl/body.py` | `drive_body`, `expected_frame_count` | `drive_body(manifest)` returns the body from `manifest.body`; `expected_frame_count(manifest)` is the number of frames the scenario implies, used by VL-001. |
@@ -268,8 +268,8 @@ Steps for one drive:
    order: keypoints, quarantine, lineage. Lineage goes last and acts as the commit marker. A
    rejected drive drops its keypoints first, then writes its quarantine rows and a lineage row
    with status `rejected` and zero counts. The lineage row holds the scenario hash, the schema
-   version, the counts and the manifest hashes of the frames and ground-truth files (taken from
-   the manifest after the files were verified; the ground-truth file is never opened). A keypoint
+   version, the counts and the manifest hash of the frames file (taken from
+   the manifest after the files were verified). A keypoint
    spec that does not fit the body is a configuration error: `ValueError`, nothing written.
 
 | Code | Rule in short |

@@ -66,8 +66,7 @@ def scan_frames(
     The facts hold the centroid (cm, the mean of the decoded points when the cloud is OK, else
     NaN). The second result is a (rows, len(keypoints), 3) float64 array in cm in file-row order:
     the keypoints of each OK frame, NaN for the others (the centroid keypoint is that same mean).
-    A bad, empty or null payload never raises. Only frames_path is opened; ground truth is never
-    read.
+    A bad, empty or null payload never raises. Only frames_path is opened.
 
     Raises ValueError if the footer's num_rows exceeds max_rows (rows; checked before the keypoint
     array is allocated, because that array is sized from the footer), if the streamed row count

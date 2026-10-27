@@ -87,7 +87,6 @@ def test_table_schemas_match_plan() -> None:
             ("frames_missing", pa.int64(), False),
             ("keypoint_rows", pa.int64(), False),
             ("frames_sha256", pa.string(), True),
-            ("ground_truth_sha256", pa.string(), True),
         ],
     }
     for name, fields in expected.items():
