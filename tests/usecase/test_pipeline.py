@@ -63,7 +63,6 @@ def _ingest(
                 "frames_missing": [len(skip)],
                 "keypoint_rows": [len(rows)],
                 "frames_sha256": ["f"],
-                "ground_truth_sha256": ["g"],
             },
             schema=LINEAGE_SCHEMA,
         )

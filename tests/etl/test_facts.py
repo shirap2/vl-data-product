@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 from numpy.typing import NDArray
 
-from vl_data.core.schemas import FRAMES_SCHEMA, encode_points
+from vl_data.core.schemas import FRAMES_SCHEMA, decode_points, encode_points
 from vl_data.etl import facts as facts_module
 from vl_data.etl.config import EtlConfig, KeypointSpec
 from vl_data.etl.facts import FACT_COLUMNS, scan_frames
@@ -52,9 +52,9 @@ def test_one_fact_per_row(write_faulty: Callable[..., Written]) -> None:
     assert facts["payload_sha256"].nunique() < 1000
     assert facts["cloud_ok"].all()
     assert (facts["n_bytes"] == 125 * 12).all()
-    truth = pq.read_table(w.drive_dir / "ground_truth.parquet").to_pandas()
-    half = (w.config.body.size_cm - 1) / 2
-    assert np.abs(facts["cx_cm"] - (truth["x_cm"] + half)).max() < 0.6
+    source = pq.read_table(w.frames_path).to_pandas().sort_values("frame_id")
+    source_x = [decode_points(p)[:, 0].mean() for p in source["points"]]
+    assert np.abs(facts["cx_cm"].to_numpy() - np.array(source_x)).max() < 1e-6
 
 
 def test_chunking_gives_same_facts(write_faulty: Callable[..., Written]) -> None:
@@ -104,14 +104,6 @@ def test_corrupt_payload_not_cloud_ok(
     assert f2.loc[50, "n_bytes"] == 124 * 12
     assert np.isnan(f2.loc[50, "cx_cm"])
     assert f2["cloud_ok"].sum() == 999
-
-
-def test_ground_truth_never_opened(write_faulty: Callable[..., Written]) -> None:
-    w = write_faulty()
-    (w.drive_dir / "ground_truth.parquet").unlink()
-    facts = scan_facts(w.frames_path, w.offsets, 256)
-    assert len(facts) == 1000
-    assert facts["cloud_ok"].all()
 
 
 def test_empty_file_gives_empty_facts(

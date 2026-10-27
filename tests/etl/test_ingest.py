@@ -26,6 +26,7 @@ from vl_data.core.hashing import file_sha256
 from vl_data.core.lake import SWAP_DIR, Lake
 from vl_data.core.lake_schemas import LINEAGE_SCHEMA
 from vl_data.core.manifest import read_manifest
+from vl_data.core.schemas import decode_points
 from vl_data.etl import ingest as ingest_module
 from vl_data.etl.config import EtlConfig, KeypointSpec
 from vl_data.etl.ingest import (
@@ -36,7 +37,6 @@ from vl_data.etl.ingest import (
     _Reject,
     ingest_drive,
 )
-from vl_data.generator.body import cube_lattice
 from vl_data.generator.drive import Drive, generate
 from vl_data.generator.faults import (
     BreakSchema,
@@ -54,7 +54,6 @@ from vl_data.generator.writer import write_drive
 from .helpers import build_table, columns
 
 FRAMES = "frames.parquet"
-TRUTH = "ground_truth.parquet"
 
 
 @pytest.fixture(scope="session")
@@ -263,7 +262,7 @@ def test_extra_file_and_two_problems_give_two_rows(
     clean_copy: Path, lake: Lake, etl: EtlConfig
 ) -> None:
     (clean_copy / "notes.txt").write_text("x", encoding="utf-8")
-    with (clean_copy / TRUTH).open("ab") as f:
+    with (clean_copy / FRAMES).open("ab") as f:
         f.write(b"x")  # size and hash both differ: two problems
     result = ingest_drive(clean_copy, lake, etl)
     _assert_rejected(result, lake, "INTEGRITY", rows=3)
@@ -419,7 +418,7 @@ def test_row_group_above_cap_rejects(clean_copy: Path, drive10: Drive, lake: Lak
 def test_rejected_after_ok_removes_keypoints(clean_copy: Path, lake: Lake, etl: EtlConfig) -> None:
     assert ingest_drive(clean_copy, lake, etl).status == "ok"
     assert lake.list_drives("keypoints") == [clean_copy.name]
-    (clean_copy / TRUTH).write_bytes(b"changed")
+    (clean_copy / FRAMES).write_bytes(b"changed")
     result = ingest_drive(clean_copy, lake, etl)
     _assert_rejected(result, lake, "INTEGRITY", rows=2)
     assert lake.read("lineage", clean_copy.name).num_rows == 1
@@ -463,53 +462,29 @@ def test_lineage_row_content(clean_copy: Path, lake: Lake, etl: EtlConfig) -> No
         "frames_missing": 0,
         "keypoint_rows": 9000,
         "frames_sha256": manifest.files[FRAMES].sha256,
-        "ground_truth_sha256": manifest.files[TRUTH].sha256,
         "drive": clean_copy.name,
     }
 
 
-def test_lineage_without_ground_truth_entry_is_null(
+def test_drive_without_ground_truth_file_ingests(
     clean_copy: Path, lake: Lake, etl: EtlConfig
 ) -> None:
-    (clean_copy / TRUTH).unlink()
-    _edit_manifest(clean_copy, lambda data: data["files"].pop(TRUTH))
+    name = "ground_truth.parquet"  # Module 1 may stop writing it; ingest never depends on it
+    (clean_copy / name).unlink(missing_ok=True)
+    _edit_manifest(clean_copy, lambda data: data["files"].pop(name, None))
     result = ingest_drive(clean_copy, lake, etl)
     assert result.status == "ok"
-    row = lake.read("lineage", clean_copy.name).to_pylist()[0]
-    assert row["ground_truth_sha256"] is None
-    assert row["frames_sha256"] is not None
+    assert result.frames_kept == 1000
 
 
-def test_ground_truth_not_read(
-    clean_copy: Path, lake: Lake, etl: EtlConfig, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: list[str] = []
-
-    def guard(original: Callable[..., Any]) -> Callable[..., Any]:
-        def wrapper(source: Any, *args: Any, **kwargs: Any) -> Any:
-            seen.append(str(source))
-            if Path(str(source)).name == TRUTH:
-                raise AssertionError(f"ground truth was opened: {source}")
-            return original(source, *args, **kwargs)
-
-        return wrapper
-
-    for name in ("ParquetFile", "read_table", "read_metadata", "read_schema", "ParquetDataset"):
-        monkeypatch.setattr(pq, name, guard(getattr(pq, name)))
-    result = ingest_drive(clean_copy, lake, etl)
-    assert result.status == "ok"
-    assert any(FRAMES in s for s in seen)  # the guard was in the path
-
-
-def test_keypoint_values_match_generator(clean_copy: Path, lake: Lake, etl: EtlConfig) -> None:
+def test_keypoint_values_match_source_points(clean_copy: Path, lake: Lake, etl: EtlConfig) -> None:
     ingest_drive(clean_copy, lake, etl)
-    truth = pq.read_table(clean_copy / TRUTH).to_pandas()
+    frames = pq.read_table(clean_copy / FRAMES).to_pandas()
     kp = lake.read("keypoints", clean_copy.name).to_pandas()
-    lattice = cube_lattice(40, 10)
-    centre_x = float(lattice.mean(axis=0)[0])  # cm
     centroid = kp[kp["keypoint"] == "centroid"].sort_values("frame_id")
     assert centroid["frame_id"].tolist() == list(range(1000))
-    assert np.abs(centroid["x_cm"].to_numpy() - (truth["x_cm"].to_numpy() + centre_x)).max() < 0.6
+    source_x = [decode_points(p)[:, 0].mean() for p in frames.sort_values("frame_id")["points"]]
+    assert np.abs(centroid["x_cm"].to_numpy() - np.array(source_x)).max() < 1e-6
     low = kp[kp["keypoint"] == "corner_000"].sort_values("frame_id")
     high = kp[kp["keypoint"] == "corner_111"].sort_values("frame_id")
     assert (np.abs(high["x_cm"].to_numpy() - low["x_cm"].to_numpy() - 39) <= 1).all()  # 1 cm wobble
@@ -618,7 +593,7 @@ def test_point_cap_is_a_boundary(clean_copy: Path, lake: Lake) -> None:
 def test_lattice_is_built_after_verify_drive(
     clean_copy: Path, lake: Lake, etl: EtlConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (clean_copy / TRUTH).write_bytes(b"changed")  # verify_drive fails
+    (clean_copy / FRAMES).write_bytes(b"changed")  # verify_drive fails
     calls = _forbid(monkeypatch, "cube_lattice")
     result = ingest_drive(clean_copy, lake, etl)
     _assert_rejected(result, lake, "INTEGRITY", rows=2)

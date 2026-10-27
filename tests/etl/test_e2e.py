@@ -63,8 +63,8 @@ def test_generate_ingest_query(tmp_path: Path, write_faulty: Callable[..., Writt
     manifest = read_manifest(written.drive_dir)
     lineage = _query(
         lake,
-        "SELECT drive, scenario_hash, status, frames_kept, keypoint_rows, frames_sha256, "
-        "ground_truth_sha256 FROM lineage",
+        "SELECT drive, scenario_hash, status, frames_kept, keypoint_rows, frames_sha256 "
+        "FROM lineage",
     )
     assert lineage == [
         (
@@ -74,7 +74,6 @@ def test_generate_ingest_query(tmp_path: Path, write_faulty: Callable[..., Writt
             1000,
             9000,
             manifest.files["frames.parquet"].sha256,
-            manifest.files["ground_truth.parquet"].sha256,
         )
     ]
     assert _query(lake, "SELECT count(*) FROM quarantine") == [(0,)]
